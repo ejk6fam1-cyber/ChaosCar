@@ -1,7 +1,7 @@
 extends Node
 ## Chaos Car: menus and game flow.
 ##   Title -> Single player setup -> race
-##         -> Online: create a race, or join one from the list of open races -> lobby -> race
+##         -> Online: create a race (get a code), or join one with its code -> lobby -> race
 ## In single player and the lobby you pick your car number and livery (with a preview).
 ## Launched with "-- --server" (or CHAOS_SERVER set) it runs as the online server instead: no window,
 ## no menus, just rooms and races (see net.gd). Port: $PORT, default 9080.
@@ -21,10 +21,11 @@ var _sp_scheme: OptionButton
 # online
 var _on_name: LineEdit
 var _on_server: LineEdit
-var _on_list: VBoxContainer
+var _on_code: LineEdit
 var _on_create: Button
 # lobby
 var _lb_title: Label
+var _lb_code: Label
 var _lb_players: Label
 var _lb_num: SpinBox
 var _lb_scheme: OptionButton
@@ -44,7 +45,6 @@ var _connect_t := -1.0         # seconds spent connecting (-1 = not connecting)
 var _connect_url := ""
 var _wait_t := -1.0            # seconds waiting for the server to answer a request (-1 = not waiting)
 var _wait_what := ""
-var _list_t := 0.0
 
 
 func _ready() -> void:
@@ -67,7 +67,6 @@ func _ready() -> void:
 		_wait_t = -1.0
 		_set_status(t))
 	Net.server_answered.connect(_on_server_answered)
-	Net.rooms_listed.connect(_on_rooms)
 	_show("title")
 
 
@@ -128,10 +127,10 @@ func _build_ui() -> void:
 	_btn(b1, "Start Race", _start_single)
 	_btn(b1, "Back", func() -> void: _show("title"))
 
-	# --- online: your name, the server, create, and the open races
+	# --- online: your name, the server, create a race, or join one with its code (all centred)
 	var o := _screen("online")
-	_on_name = _edit(_row(o, "Your name"), Net.load_setting("name", ""), "Driver name", 14)
-	var sr := _row(o, "Server")
+	_on_name = _edit(_crow(o, "Your name"), Net.load_setting("name", ""), "Driver name", 14)
+	var sr := _crow(o, "Server")
 	_on_server = _edit(sr, Net.default_server(), "wss://your-server.onrender.com", 64)
 	_on_server.custom_minimum_size.x = 280
 	var rc := Button.new()
@@ -143,12 +142,19 @@ func _build_ui() -> void:
 		_connect())
 	sr.add_child(rc)
 	_on_create = _btn(o, "Create a Race", func() -> void: _request("create"))
-	var lt := _text(o, "Open races", 17, Color(1, 0.82, 0.1))
-	lt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_on_list = VBoxContainer.new()
-	_on_list.add_theme_constant_override("separation", 4)
-	_on_list.custom_minimum_size = Vector2(0, 110)
-	o.add_child(_on_list)
+	var jr := _crow(o, "Race code")
+	_on_code = _edit(jr, "", "ABCD", 4)
+	_on_code.custom_minimum_size.x = 90
+	var jb := Button.new()
+	jb.text = "Join"
+	jb.custom_minimum_size = Vector2(90, 32)
+	jb.pressed.connect(func() -> void:
+		var code := _on_code.text.strip_edges().to_upper()
+		if code.length() != 4:
+			_set_status("Race codes are 4 letters.")
+			return
+		_request("join:" + code))
+	jr.add_child(jb)
 	_btn(o, "Back", func() -> void:
 		Net.disconnect_from()
 		_hello_ok = false
@@ -158,6 +164,8 @@ func _build_ui() -> void:
 	var l := _screen("lobby")
 	_lb_title = _text(l, "", 24, Color(1, 0.82, 0.1))
 	_lb_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lb_code = _text(l, "", 15, Color(1, 1, 1, 0.75))
+	_lb_code.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_lb_players = _text(l, "", 15, Color.WHITE)
 	_lb_players.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_lb_players.custom_minimum_size = Vector2(0, 84)
@@ -250,6 +258,13 @@ func _row(parent: Node, label: String) -> HBoxContainer:
 	var l := _text(r, label, 17, Color.WHITE)
 	l.custom_minimum_size.x = LABEL_W
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	return r
+
+
+## A centred row: label and controls together in the middle of the screen.
+func _crow(parent: Node, label: String) -> HBoxContainer:
+	var r := _hrow(parent)
+	_text(r, label, 17, Color.WHITE)
 	return r
 
 
@@ -385,10 +400,7 @@ func _unhandled_input(event: InputEvent) -> void:
 ## The online screen: connects straight away and lists the open races.
 func _open_online() -> void:
 	_show("online")
-	_fill_list([])
-	if _hello_ok and Net.is_online():
-		Net.list_rooms()
-	else:
+	if not (_hello_ok and Net.is_online()):
 		_connect()
 
 
@@ -433,12 +445,6 @@ func _send_pending() -> void:
 
 
 func _process(delta: float) -> void:
-	# keep the list of open races fresh while it's on screen
-	if _screens.has("online") and _screens["online"].visible and _hello_ok and Net.is_online():
-		_list_t += delta
-		if _list_t > 2.0:
-			_list_t = 0.0
-			Net.list_rooms()
 	if _wait_t >= 0.0:
 		_wait_t += delta
 		if _wait_t > 6.0 and _wait_t - delta <= 6.0:
@@ -481,34 +487,8 @@ func _on_server_answered(server_protocol: int) -> void:
 		_set_status("The server is running a different version (%d, this page is %d). Refresh the page in a few minutes - the server may still be updating." % [server_protocol, Net.PROTOCOL])
 		return
 	_hello_ok = true
-	_set_status("")
-	Net.list_rooms()
+	_set_status("Connected - create a race, or type a race code and Join.")
 	_send_pending()
-
-
-func _on_rooms(rooms: Array) -> void:
-	if _screens["online"].visible:
-		_fill_list(rooms)
-
-
-func _fill_list(rooms: Array) -> void:
-	for ch in _on_list.get_children():
-		ch.queue_free()
-	if rooms.is_empty():
-		var none := _text(_on_list, "No open races yet - create one!" if _hello_ok else "(connecting...)", 14, Color(1, 1, 1, 0.55))
-		none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		return
-	for rm: Dictionary in rooms:
-		var b := Button.new()
-		var full: bool = rm["players"] >= rm["max"]
-		b.text = "%s's race   -   %d/%d players, %d laps%s" % [rm["host"], rm["players"], rm["max"], rm["laps"],
-			"   (racing)" if rm["racing"] else ("   (full)" if full else "")]
-		b.disabled = rm["racing"] or full
-		b.custom_minimum_size = Vector2(440, 30)
-		b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		var code: String = rm["code"]
-		b.pressed.connect(func() -> void: _request("join:" + code))
-		_on_list.add_child(b)
 
 
 func _on_disconnected() -> void:
@@ -537,7 +517,8 @@ func _on_lobby(st: Dictionary) -> void:
 		var sc: Array = Race.SCHEMES[clampi(int(p["scheme"]), 0, Race.SCHEMES.size() - 1)]
 		lines.append("#%d  %s%s   -   %s, %s%s" % [p["number"], p["name"], "  (you)" if p["id"] == me else "",
 			sc[0], spot_txt, "   [host]" if p["id"] == st["host"] else ""])
-	_lb_title.text = "%s's race  (%d/%d)" % [host_name, st["players"].size(), Net.MAX_PLAYERS]
+	_lb_title.text = "RACE CODE:  %s" % st["code"]
+	_lb_code.text = "%s's race  -  %d/%d players.  Give the code to the other drivers." % [host_name, st["players"].size(), Net.MAX_PLAYERS]
 	_lb_players.text = "\n".join(lines)
 	_lb_host_box.visible = host
 	_lb_laps.set_value_no_signal(st["laps"])
