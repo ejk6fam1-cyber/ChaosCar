@@ -221,9 +221,8 @@ func _draw_radar() -> void:
 			continue
 		var px := track.position.x + (c.x + hw) / (hw * 2.0) * track.size.x
 		_radar.draw_rect(Rect2(px - 2.5, py - 4, 5, 8), c.color.darkened(0.15))
-		if c.is_player:       # another human: outline and name
+		if c.is_player:       # another human: outlined
 			_radar.draw_rect(Rect2(px - 3.5, py - 5, 7, 10), Color.WHITE, false, 1.0)
-			_radar.draw_string(font, Vector2(track.end.x + 2, py + 4), c.driver_name.left(3), HORIZONTAL_ALIGNMENT_LEFT, 22, 9, c.color)
 	# you: drawn last, bigger, outlined
 	var ppx := track.position.x + (p.x + hw) / (hw * 2.0) * track.size.x
 	_radar.draw_rect(Rect2(ppx - 4.5, cy - 6.5, 9, 13), Color(1, 0.2, 0.15) if p.blocked_flash > 0.0 else Color.WHITE)

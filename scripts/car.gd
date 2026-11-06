@@ -69,6 +69,10 @@ func _draw() -> void:
 	var w := WIDTH * ppm
 	var l := LENGTH * ppm
 	var r := Rect2(-w * 0.5, -l * 0.5, w, l)
+	# a human driver's car: a soft halo in its colour so you can tell who's who
+	if is_player:
+		draw_rect(r.grow(3.5), Color(color, 0.25))
+		draw_rect(r.grow(2.0), Color(1, 1, 1, 0.55), false, 1.5)
 	# shadow
 	draw_rect(Rect2(r.position + Vector2(2, 2), r.size), Color(0, 0, 0, 0.35))
 	# tyres poking out at the corners
