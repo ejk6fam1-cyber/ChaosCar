@@ -299,6 +299,8 @@ func _step(dt: float) -> void:
 	_aero()
 	for c in cars:
 		c.carry = maxf(c.draft_eff, c.carry - CARRY_FADE * dt)
+		c.draft_meter = draft_strength(c)
+		c.push_meter = push_strength(c)
 		# dirty air: a slow random wander in each car's drag
 		c.turb = clampf(c.turb * (1.0 - 0.3 * dt) + rng.randf_range(-1.0, 1.0) * TURBULENCE * sqrt(dt), -TURBULENCE, TURBULENCE)
 		if flag == Flag.PACE:
@@ -336,6 +338,17 @@ static func aero_mult(c: Car) -> float:
 		* (1.0 + c.turb) \
 		* (1.0 + SIDE_DRAFT * c.side) \
 		* (1.0 + DEEP_DRAG * clampf(c.line_pos - DEEP_FROM, 0, 10))
+
+
+## HUD meters, 0..1. Draft: the tow you're getting (a long line ahead pulls hardest).
+static func draft_strength(c: Car) -> float:
+	return clampf(maxf(c.draft_eff, c.carry) / 2.0, 0.0, 1.0)
+
+
+## Push: the drag cut from cars nose-to-tail on your bumper (full at about 8 cars).
+static func push_strength(c: Car) -> float:
+	var cut := 1.0 - (1.0 - PUSH_MAX * c.push) * (1.0 - PUSH_LINE * minf(c.line_behind, LINE_CAP))
+	return clampf(cut / 0.2, 0.0, 1.0)
 
 
 ## Lined-up fraction of two cars side by side (1 = directly in line, 0 = a full car width apart).
@@ -786,7 +799,7 @@ func _tap(dir: int) -> void:
 # ------------------------------------------------------------------ online
 
 ## Server: the state every online player needs, ~20 times a second.
-## Per car: s, lane, v, draft, push.  Header: clock, flag.
+## Per car: s, lane, v, draft meter, push meter.  Header: clock, flag.
 func snapshot() -> PackedFloat32Array:
 	var out := PackedFloat32Array()
 	out.resize(2 + cars.size() * 5)
@@ -798,8 +811,8 @@ func snapshot() -> PackedFloat32Array:
 		out[k] = c.s
 		out[k + 1] = float(c.lane)
 		out[k + 2] = c.v
-		out[k + 3] = minf(c.draft_eff, 3.0)
-		out[k + 4] = c.push
+		out[k + 3] = c.draft_meter
+		out[k + 4] = c.push_meter
 	return out
 
 
@@ -829,9 +842,8 @@ func apply_snapshot(data: PackedFloat32Array, fin_idx: PackedInt32Array, fin_t: 
 		if lane != c.lane and not (c == player and _net_clock < player.pred_until):
 			c.lane = lane
 			c.x = lane_x(lane)
-		c.draft_eff = data[k + 3]
-		c.draft = minf(c.draft_eff, 1.0)
-		c.push = data[k + 4]
+		c.draft_meter = data[k + 3]
+		c.push_meter = data[k + 4]
 	if fin_idx.size() != finish_order.size():
 		finish_order.clear()
 		for j in fin_idx.size():

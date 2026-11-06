@@ -70,7 +70,7 @@ func _physics_process(d: float) -> void:
 		race._tap(1 if randf() < 0.5 else -1)
 	if t > next_log:
 		next_log += 10.0
-		print("%s t=%4.1f P%d lap %d  %3d mph  lane %d  draft %.2f push %.0f  flag %d" % [who, t, race.player.place, race.lap_of(maxf(race.player.s, 0)), int(race.player.v * Race.MPH), race.player.lane, race.player.draft_eff, race.player.push, race.flag])
+		print("%s t=%4.1f P%d lap %d  %3d mph  lane %d  draft %.2f push %.2f  flag %d" % [who, t, race.player.place, race.lap_of(maxf(race.player.s, 0)), int(race.player.v * Race.MPH), race.player.lane, race.player.draft_meter, race.player.push_meter, race.flag])
 
 func _on_over() -> void:
 	var me := race.finish_order.find(race.player) + 1

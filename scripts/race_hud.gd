@@ -18,18 +18,21 @@ var _board: Control
 var _again: Button
 const RADAR := Rect2(780, 20, 160, 470)
 const RADAR_RANGE := 220.0     # metres ahead/behind shown on the radar
-const MAP := Rect2(12, 214, 250, 150)
-const LIGHTS := Rect2(12, 134, 250, 70)
+const INFO := Rect2(12, 12, 270, 114)
+const METERS := Rect2(12, 136, 270, 74)
+const MAP := Rect2(12, 220, 270, 150)
 
 
 func _ready() -> void:
-	_panel(Rect2(12, 12, 250, 112))
-	_info = _label(Vector2(24, 16), 17, Color.WHITE)
+	_panel(INFO)
+	_info = _label(INFO.position + Vector2(12, 6), 16, Color.WHITE)
+	_info.size = INFO.size - Vector2(24, 12)
+	_info.clip_text = true
 	_flag = _label(Vector2(300, 14), 26, Color.WHITE)
 	_flag.size = Vector2(360, 34)
 	_flag.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_panel(LIGHTS)
-	_lights = _canvas(LIGHTS, _draw_lights)
+	_panel(METERS)
+	_lights = _canvas(METERS, _draw_meters)
 	_panel(MAP)
 	_map = _canvas(MAP, _draw_map)
 	_panel(RADAR.grow(6))
@@ -110,8 +113,8 @@ func _process(_delta: float) -> void:
 		return
 	var p := race.player
 	var leader := race.order[0]
-	var gap := "LEADING" if leader == p else "%.1f car lengths" % ((leader.s - p.s) / Car.LENGTH)
-	_info.text = "P%d / %d\nLap %d / %d\n%d MPH\nGap to leader: %s" % [p.place, race.cars.size(), race.lap_of(maxf(p.s, 0.0)), race.laps, int(p.v * Race.MPH), gap]
+	var gap := "Leading!" if leader == p else "Gap: %.1f car lengths" % ((leader.s - p.s) / Car.LENGTH)
+	_info.text = "P%d / %d\nLap %d / %d\n%d MPH\n%s" % [p.place, race.cars.size(), race.lap_of(maxf(p.s, 0.0)), race.laps, int(p.v * Race.MPH), gap]
 	match race.flag:
 		Race.Flag.PACE:
 			_flag.text = "PACE LAP - GREEN IN %d" % int(ceil(Race.PACE_TIME - race.clock))
@@ -136,19 +139,28 @@ func _process(_delta: float) -> void:
 		_board.queue_redraw()
 
 
-## DRAFT and PUSH lights: green when you've got it, red when you haven't.
-func _draw_lights() -> void:
+## DRAFT and PUSH meters: how strong each force is right now, red (none) through yellow to green (full).
+func _draw_meters() -> void:
 	var font := ThemeDB.fallback_font
 	var p := race.player
-	var items := [["DRAFT", maxf(p.draft_eff, p.carry) > 0.25], ["PUSH", p.push > 0.5]]
+	var items := [["DRAFT", p.draft_meter], ["PUSH", p.push_meter]]
+	var segs := 14
 	for i in items.size():
-		var cx := 40.0 + i * 125.0
-		var on: bool = items[i][1]
-		var col := Color(0.2, 0.95, 0.35) if on else Color(0.95, 0.2, 0.15)
-		_lights.draw_circle(Vector2(cx, 35), 15.0, Color(0, 0, 0, 0.6))
-		_lights.draw_circle(Vector2(cx, 35), 12.0, col)
-		_lights.draw_circle(Vector2(cx - 4, 31), 4.0, Color(1, 1, 1, 0.35))
-		_lights.draw_string(font, Vector2(cx + 20, 42), items[i][0], HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color.WHITE)
+		var y := 12.0 + i * 31.0
+		var v: float = items[i][1]
+		_lights.draw_string(font, Vector2(10, y + 15), items[i][0], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color.WHITE)
+		var bar := Rect2(70, y, 150, 20)
+		_lights.draw_rect(bar.grow(2), Color(0, 0, 0, 0.6))
+		var w := bar.size.x / segs
+		var lit := int(round(v * segs))
+		for k in segs:
+			var t := float(k) / (segs - 1)
+			var col := Color(0.9, 0.15, 0.1).lerp(Color(0.95, 0.85, 0.1), t * 2.0) if t < 0.5 \
+				else Color(0.95, 0.85, 0.1).lerp(Color(0.15, 0.9, 0.25), (t - 0.5) * 2.0)
+			if k >= lit:
+				col = col.darkened(0.8)
+			_lights.draw_rect(Rect2(bar.position.x + k * w + 1, bar.position.y + 1, w - 2, bar.size.y - 2), col)
+		_lights.draw_string(font, Vector2(228, y + 15), "%d%%" % int(round(v * 100.0)), HORIZONTAL_ALIGNMENT_LEFT, 38, 14, Color(1, 1, 1, 0.85))
 
 
 ## Full finishing order: two columns of 32, humans in their colours, times or gaps.
@@ -211,16 +223,16 @@ func _draw_radar() -> void:
 		_radar.draw_rect(Rect2(px - 2.5, py - 4, 5, 8), c.color.darkened(0.15))
 		if c.is_player:       # another human: outline and name
 			_radar.draw_rect(Rect2(px - 3.5, py - 5, 7, 10), Color.WHITE, false, 1.0)
-			_radar.draw_string(font, Vector2(px + 5, py + 4), c.driver_name.left(8), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, c.color)
+			_radar.draw_string(font, Vector2(track.end.x + 2, py + 4), c.driver_name.left(3), HORIZONTAL_ALIGNMENT_LEFT, 22, 9, c.color)
 	# you: drawn last, bigger, outlined
 	var ppx := track.position.x + (p.x + hw) / (hw * 2.0) * track.size.x
 	_radar.draw_rect(Rect2(ppx - 4.5, cy - 6.5, 9, 13), Color(1, 0.2, 0.15) if p.blocked_flash > 0.0 else Color.WHITE)
 	_radar.draw_rect(Rect2(ppx - 3.5, cy - 5.5, 7, 11), p.color)
-	_radar.draw_string(font, Vector2(track.end.x + 4, cy + 4), "YOU", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1.0, 0.85, 0.15))
+	_radar.draw_string(font, Vector2(2, cy + 4), "YOU", HORIZONTAL_ALIGNMENT_LEFT, 22, 10, p.color)
 	# leader arrow if the front of the pack is off the radar
 	var lead := race.order[0]
 	if (lead.s - p.s) * scale > cy - track.position.y:
-		_radar.draw_string(font, Vector2(track.position.x, track.position.y + 12), "^ leader %d m" % int(lead.s - p.s), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 1, 1, 0.8))
+		_radar.draw_string(font, Vector2(track.position.x, track.position.y + 12), "^ leader %d lengths" % int((lead.s - p.s) / Car.LENGTH), HORIZONTAL_ALIGNMENT_LEFT, track.size.x, 11, Color(1, 1, 1, 0.8))
 
 
 ## The whole tri-oval with every car on it.

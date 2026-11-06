@@ -27,6 +27,8 @@ var _lb_start: Button
 var _lb_host_box: Control
 var _pending := ""            # "create" or "join" while connecting
 var _local_cfg := {}
+var _connect_t := -1.0        # seconds spent connecting (-1 = not connecting)
+var _connect_url := ""
 
 
 func _ready() -> void:
@@ -39,7 +41,10 @@ func _ready() -> void:
 		return
 	_build_ui()
 	Net.connected.connect(_on_connected)
-	Net.connection_failed.connect(func(reason: String) -> void: _set_status(reason + " Check the server address."))
+	Net.connection_failed.connect(func(reason: String) -> void:
+		_connect_t = -1.0
+		_pending = ""
+		_set_status("%s (%s) Check the address and that the Render server is Live." % [reason, _connect_url]))
 	Net.disconnected.connect(_on_disconnected)
 	Net.lobby_changed.connect(_on_lobby)
 	Net.race_started.connect(_on_race_started)
@@ -67,8 +72,9 @@ func _build_ui() -> void:
 	sub.size = Vector2(960, 24)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_status = _text(_ui, "", 16, Color(1, 0.55, 0.45))
-	_status.position = Vector2(0, 494)
-	_status.size = Vector2(960, 24)
+	_status.position = Vector2(40, 482)
+	_status.size = Vector2(880, 50)
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	# --- title
@@ -233,17 +239,7 @@ func _spot_text(spot: int) -> String:
 
 
 func _draw_bg(c: Control) -> void:
-	c.draw_rect(Rect2(Vector2.ZERO, Vector2(960, 540)), Color(0.07, 0.08, 0.12))
-	# a sweep of banked asphalt with lane lines
-	for i in 7:
-		var y := 300.0 + i * 26.0
-		c.draw_rect(Rect2(0, y, 960, 25), Color(0.16, 0.16, 0.19) if i % 2 == 0 else Color(0.18, 0.18, 0.21))
-	c.draw_rect(Rect2(0, 296, 960, 4), Color(0.95, 0.8, 0.15))
-	c.draw_rect(Rect2(0, 482, 960, 6), Color(0.9, 0.9, 0.88))
-	# checkered band under the title
-	for i in 80:
-		for r in 2:
-			c.draw_rect(Rect2(i * 12, 136 + r * 6, 12, 6), Color.WHITE if (i + r) % 2 == 0 else Color(0.05, 0.05, 0.05))
+	c.draw_rect(Rect2(Vector2.ZERO, Vector2(960, 540)), Color(0.08, 0.09, 0.13))
 
 
 # =================================================================== single player
@@ -316,13 +312,37 @@ func _go_online(what: String) -> void:
 	if Net.is_online():
 		_on_connected()
 		return
-	_set_status("Connecting... (a sleeping free server can take about a minute to wake up)")
+	_connect_url = Net.normalize_url(url)
+	_on_server.text = _connect_url
 	if Net.connect_to(url) != OK:
-		_set_status("That server address doesn't look right.")
+		_set_status("That server address doesn't look right: %s" % _connect_url)
+		_pending = ""
+		return
+	_connect_t = 0.0
+
+
+func _process(delta: float) -> void:
+	if _connect_t < 0.0:
+		return
+	_connect_t += delta
+	if Net.connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		_connect_t = -1.0
+		return
+	if Net.connection_status() == MultiplayerPeer.CONNECTION_DISCONNECTED:
+		_connect_t = -1.0
+		return
+	if _connect_t > 90.0:
+		_connect_t = -1.0
+		_pending = ""
+		Net.disconnect_from()
+		_set_status("No answer from %s. Check the address (it should start with wss://) and that the Render server is Live." % _connect_url)
+	else:
+		_set_status("Connecting to %s ... %ds  (a sleeping free server takes about a minute to wake up)" % [_connect_url, int(_connect_t)])
 
 
 func _on_connected() -> void:
-	_set_status("")
+	_connect_t = -1.0
+	_set_status("Connected - setting up the race...")
 	if _pending == "create":
 		Net.create_room(_on_name.text)
 	elif _pending == "join":

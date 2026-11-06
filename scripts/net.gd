@@ -14,7 +14,7 @@ signal lobby_changed(state: Dictionary)
 signal race_started(cfg: Dictionary)
 signal error_message(text: String)
 
-const PROTOCOL := 1                  # bump when client and server must update together
+const PROTOCOL := 2                  # bump when client and server must update together
 const MAX_PLAYERS := 4
 const SEND_EVERY := 3                # physics ticks between snapshots (60 / 3 = 20 a second)
 const DEFAULT_SERVER := "ws://localhost:9080"
@@ -61,13 +61,20 @@ func save_setting(key: String, value: Variant) -> void:
 	cf.save(SETTINGS_FILE)
 
 
-## The server address: one baked into the web build (server_url.txt) wins over the saved one.
+## The server address. The one baked into the web build (server_url.txt) is used unless you've typed a
+## different one yourself; a new baked address (the server moved) always wins over an old saved one.
 func default_server() -> String:
+	var baked := ""
 	if FileAccess.file_exists("res://server_url.txt"):
-		var baked := FileAccess.get_file_as_string("res://server_url.txt").strip_edges()
-		if baked != "":
-			return load_setting("server", baked)
-	return load_setting("server", DEFAULT_SERVER)
+		baked = normalize_url(FileAccess.get_file_as_string("res://server_url.txt"))
+	var saved: String = load_setting("server", "")
+	if baked != "" and (saved == "" or saved.contains("localhost") or load_setting("baked", "") != baked):
+		save_setting("baked", baked)
+		save_setting("server", baked)
+		return baked
+	if saved != "":
+		return saved
+	return baked if baked != "" else DEFAULT_SERVER
 
 
 # =================================================================== server
@@ -301,8 +308,29 @@ func _physics_process(_delta: float) -> void:
 
 # =================================================================== client
 
+## Accepts what people paste: https://x.onrender.com/ -> wss://x.onrender.com, a bare host -> wss://host
+static func normalize_url(url: String) -> String:
+	url = url.strip_edges()
+	if url.begins_with("https://"):
+		url = "wss://" + url.substr(8)
+	elif url.begins_with("http://"):
+		url = "ws://" + url.substr(7)
+	elif not url.begins_with("ws://") and not url.begins_with("wss://") and url != "":
+		url = ("ws://" if url.begins_with("localhost") or url.begins_with("127.") else "wss://") + url
+	while url.ends_with("/"):
+		url = url.left(url.length() - 1)
+	return url
+
+
+func connection_status() -> int:
+	if multiplayer.multiplayer_peer == null:
+		return MultiplayerPeer.CONNECTION_DISCONNECTED
+	return multiplayer.multiplayer_peer.get_connection_status()
+
+
 func connect_to(url: String) -> Error:
 	disconnect_from()
+	url = normalize_url(url)
 	var peer := WebSocketMultiplayerPeer.new()
 	var err := peer.create_client(url)
 	if err != OK:
