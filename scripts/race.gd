@@ -52,6 +52,10 @@ const BUBBLE_RANGE := 120.0      # metres ahead the pack's pull reaches (fading 
 const BUBBLE_CARS := 5.0         # weighted cars ahead (any lane) for the full bubble
 const WAKE_MAX := 0.08           # drag cut for a whole group that has fallen behind the group ahead
 const WAKE_RANGE := 900.0        # metres: past this the group ahead is too far gone to tow you
+const STRAGGLER_FROM := 300.0    # metres behind the leader where the straggler tow starts ...
+const STRAGGLER_FULL := 1300.0   # ... and where it's at full strength
+const STRAGGLER_MAX := 0.2       # full-strength drag cut: a lone car out there runs about pack speed, so
+								 # stragglers settle about a kilometre back - never lapped, never catching up
 const GROUP_GAP := 15.0          # metres: cars closer than this (any lane) count as one group
 const LATERAL := 40.0            # m/s the car is DRAWN sliding across (a switch looks like ~0.1 s)
 const ROOM_PLAYER := 0.4         # metres of clear space you need nose and tail to switch into a lane
@@ -364,6 +368,7 @@ static func aero_mult(c: Car) -> float:
 		* (1.0 - PUSH_LINE * minf(c.line_behind, LINE_CAP)) \
 		* (1.0 - BUBBLE_MAX * c.bubble) \
 		* (1.0 - WAKE_MAX * c.wake) \
+		* (1.0 - STRAGGLER_MAX * c.assist) \
 		* (1.0 + c.turb) \
 		* (1.0 + SIDE_DRAFT * c.side) \
 		* (1.0 + DEEP_DRAG * clampf(c.line_pos - DEEP_FROM, 0, 10))
@@ -394,6 +399,7 @@ func _aero() -> void:
 			var g := order[i - 1].s - c.s
 			group_wake = clampf(g / 80.0, 0.0, 1.0) * exp(-maxf(g - 300.0, 0.0) / WAKE_RANGE)
 		c.wake = group_wake
+		c.assist = clampf((order[0].s - c.s - STRAGGLER_FROM) / (STRAGGLER_FULL - STRAGGLER_FROM), 0.0, 1.0)
 	# pack bubble: weighted count of cars ahead (any lane) within BUBBLE_RANGE, as a sliding window
 	var w_start := 0
 	var w_sum := 0.0          # sum of s over the window (cars ahead of i within range)
