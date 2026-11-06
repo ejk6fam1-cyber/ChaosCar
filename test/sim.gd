@@ -59,6 +59,14 @@ func _physics_process(d: float) -> void:
 			var c: Car = o[k]
 			front += " [L%d -%.0fm p%d %.0f]" % [c.lane, o[0].s - c.s, c.line_pos, c.v * Race.MPH]
 		print("   front:" + front)
+		var strag := 0
+		var drafting := 0
+		for c in o:
+			if c.assist > 0.0:
+				strag += 1
+				if c.draft > 0.3 or c.push > 0.0:
+					drafting += 1
+		print("   stragglers (300 m+ back): %d, of them drafting or pushed: %d" % [strag, drafting])
 		var lens := {}
 		for c in o:
 			if c.line_pos == 0:

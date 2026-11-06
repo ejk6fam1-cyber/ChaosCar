@@ -46,6 +46,8 @@ var line_behind := 0         # cars in the line directly behind
 var crew := 0                # AI: how many more cars behind me should jump out with me
 var line_pos := 0            # my place in a nose-to-tail line (0 = at the front of it)
 var bubble := 0.0            # 0..1 riding inside the pack
+var wait_for: Car = null     # AI straggler: easing off so this car (behind, same lane) can catch up
+var wait_t := 0.0
 var assist := 0.0            # 0..1 straggler tow (far behind the leader)
 var wake := 0.0              # 0..1 in the wake of cars ahead (long range)
 var turb := 0.0              # dirty-air wander in drag

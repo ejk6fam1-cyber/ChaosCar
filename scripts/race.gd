@@ -532,6 +532,10 @@ func _ai_choose(c: Car) -> void:
 		if _go(c, f.lane, "crew" if f.crew > 0 else "follow", true):
 			c.think = rng.randf_range(1.2, 2.0)
 			return
+	# dropped off the pack: desperate to team up with anyone to draft with
+	if c.assist > 0.0 and c.draft < 0.3 and not c.finished:
+		if _regroup(c):
+			return
 	var lone := c.draft < 0.2 and not train
 	if lone:
 		c.think = rng.randf_range(0.5, 1.2)     # out in the wind: look for a line to join, quickly
@@ -603,6 +607,33 @@ func _ai_choose(c: Car) -> void:
 				break
 	if best != c.lane:
 		_go(c, best, "score")
+
+
+## A straggler on its own: get in line with the nearest car ahead (up to 600 m away), or, if nobody is
+## in reach ahead, pull in front of a straggler coming up behind and ease off until it's on the bumper,
+## so the two of them can draft together. Moves one lane at a time. Returns true if it did something.
+func _regroup(c: Car) -> bool:
+	c.think = rng.randf_range(0.3, 0.7)
+	if c.since_switch < 0.8:
+		return true
+	var i := c.place - 1
+	var ahead: Car = order[i - 1] if i > 0 else null
+	var behind: Car = order[i + 1] if i + 1 < order.size() else null
+	var target_lane := -1
+	if ahead and ahead.s - c.s < 600.0 and not ahead.finished:
+		target_lane = ahead.lane
+		c.wait_for = null
+	elif behind and c.s - behind.s < 250.0 and not behind.finished:
+		target_lane = behind.lane
+		if target_lane == c.lane and c.wait_for == null:
+			c.wait_for = behind      # same lane now: ease off and let it catch up
+			c.wait_t = 8.0
+	if target_lane < 0 or target_lane == c.lane:
+		return target_lane >= 0
+	var step := c.lane + signi(target_lane - c.lane)
+	if _path_clear(c, lane_x(step)):
+		_go(c, step, "regroup")
+	return true
 
 
 ## The nearest car directly ahead (same lane), within `within` metres.
@@ -756,6 +787,16 @@ func _runs(dt: float) -> void:
 	for c in cars:
 		if c.is_player and not autopilot:
 			c.throttle = 1.0
+			continue
+		if c.wait_for != null:
+			# straggler easing off for the car behind to join up (gives up after a few seconds)
+			c.wait_t -= dt
+			var w := c.wait_for
+			if c.wait_t <= 0.0 or w.lane != c.lane or w.s > c.s or c.s - w.s - Car.LENGTH < 3.0 or c.assist <= 0.0:
+				c.wait_for = null
+				c.throttle = 1.0
+			else:
+				c.throttle = 0.8
 			continue
 		if c.lift > 0.0:
 			c.lift -= dt
