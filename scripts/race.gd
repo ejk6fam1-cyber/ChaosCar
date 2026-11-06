@@ -115,7 +115,6 @@ var lane_cars: Array = []           # per lane: its cars, front first (built in 
 var camera: Camera2D
 var track_view: TrackView
 var hud: RaceHud
-var audio: RaceAudio
 var spotter: Spotter
 var stats := {}                     # test: lane changes by reason
 var autopilot := false              # tests: the player car drives like the AI
@@ -162,13 +161,9 @@ func _ready() -> void:
 		hud = RaceHud.new()
 		hud.race = self
 		add_child(hud)
-		audio = RaceAudio.new()
-		audio.race = self
-		add_child(audio)
 		spotter = Spotter.new()
 		spotter.race = self
 		spotter.hud = hud
-		spotter.audio = audio
 		add_child(spotter)
 	start()
 
@@ -909,8 +904,6 @@ func _unhandled_input(event: InputEvent) -> void:
 				_tap(-1)
 			KEY_D, KEY_RIGHT:
 				_tap(1)
-			KEY_M:
-				RaceAudio.toggle_mute()
 
 
 func _tap(dir: int) -> void:

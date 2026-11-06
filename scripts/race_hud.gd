@@ -41,7 +41,7 @@ func _ready() -> void:
 	_panel(RADAR.grow(6))
 	_radar = _canvas(RADAR, _draw_radar)
 	var help := _label(Vector2(12, 512), 15, Color(1, 1, 1, 0.75))
-	help.text = "A / D  or  Left / Right : switch lane (tap)      M : sound on/off"
+	help.text = "A / D  or  Left / Right : switch lane (tap)"
 	# the spotter's radio box
 	_radio_box = Control.new()
 	_radio_box.position = Vector2(300, 452)
