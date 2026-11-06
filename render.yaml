@@ -1,0 +1,11 @@
+# Render blueprint: the Chaos Car game server (free plan). Redeploys on every push.
+services:
+  - type: web
+    name: chaos-car
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: CHAOS_SERVER
+        value: "1"

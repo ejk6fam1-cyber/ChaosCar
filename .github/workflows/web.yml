@@ -1,0 +1,62 @@
+# Builds the browser version of Chaos Car on every push to main and publishes it on GitHub Pages.
+# Needs: Settings -> Pages -> Source = "GitHub Actions", and a repository variable SERVER_URL
+# (Settings -> Secrets and variables -> Actions -> Variables), e.g. wss://chaos-car-xxxx.onrender.com
+name: Build web game
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.7-stable
+  GODOT_TEMPLATES_DIR: 4.7.stable
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Godot and its web export templates
+        run: |
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip" -O godot.zip
+          unzip -q godot.zip
+          sudo mv "Godot_v${GODOT_VERSION}_linux.x86_64" /usr/local/bin/godot
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_export_templates.tpz" -O templates.tpz
+          mkdir -p ~/.local/share/godot/export_templates
+          unzip -q templates.tpz -d tpl
+          mv tpl/templates ~/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIR}
+
+      - name: Bake in the server address
+        run: echo "${{ vars.SERVER_URL }}" > server_url.txt
+
+      - name: Export
+        run: |
+          mkdir -p build/web
+          godot --headless --path . --import || true
+          godot --headless --path . --export-release "Web" build/web/index.html
+          ls -la build/web
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
