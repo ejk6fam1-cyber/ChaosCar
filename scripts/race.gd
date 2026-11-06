@@ -21,8 +21,22 @@ static var LAP := 4281.0         # metres per lap (set from the oval's real leng
 static var TRACK_LENGTH := 21405.0   # race distance of the race on screen (set per race)
 const FIELD := 64
 const DEFAULT_SPOT := 36         # single player default starting spot (row 18, outside)
-const HUMAN_NUMBERS := [7, 11, 22, 88]
-const HUMAN_COLORS := [Color(1.0, 0.82, 0.1), Color(0.2, 0.85, 1.0), Color(1.0, 0.35, 0.7), Color(1.0, 0.5, 0.1)]
+const HUMAN_NUMBERS := [7, 11, 22, 88]     # defaults for players who don't pick
+## Liveries players can choose: name, body colour, trim (stripes and spoiler).
+const SCHEMES := [
+	["Sunburst", Color(1.0, 0.82, 0.1), Color(0.08, 0.08, 0.1)],
+	["Ice", Color(0.2, 0.85, 1.0), Color(0.05, 0.12, 0.35)],
+	["Bubblegum", Color(1.0, 0.35, 0.7), Color(1.0, 1.0, 1.0)],
+	["Blaze", Color(1.0, 0.5, 0.1), Color(0.08, 0.08, 0.1)],
+	["Racing Red", Color(0.85, 0.1, 0.1), Color(1.0, 1.0, 1.0)],
+	["Lime", Color(0.55, 0.95, 0.2), Color(0.08, 0.08, 0.1)],
+	["Royal", Color(0.15, 0.3, 0.9), Color(1.0, 0.85, 0.15)],
+	["Midnight", Color(0.12, 0.12, 0.16), Color(1.0, 0.5, 0.1)],
+	["Ghost", Color(0.93, 0.93, 0.96), Color(0.85, 0.1, 0.1)],
+	["Grape", Color(0.55, 0.2, 0.85), Color(0.6, 1.0, 0.25)],
+	["Gold Rush", Color(0.85, 0.65, 0.2), Color(0.08, 0.08, 0.1)],
+	["Mint", Color(0.4, 0.92, 0.72), Color(0.05, 0.3, 0.2)],
+]
 const AI_NAMES := ["Hollis", "Barrett", "Dunn", "Okafor", "Varga", "Lindqvist", "Pruitt", "Tanaka", "Moreau",
 	"Castellanos", "Whitlock", "Gruber", "Abernathy", "Kowalski", "Rinaldi", "Fairbanks", "Delacroix",
 	"Haverford", "Nakamura", "Oduya", "Petrov", "Sorensen", "McAllister", "Quinlan", "Ashby", "Brannigan",
@@ -219,9 +233,14 @@ func _make_roster() -> Array:
 			var k: int = free[rng.randi_range(0, free.size() - 1)]
 			spots[k] = h
 			free.erase(k)
+	var taken: Array[int] = []          # the players' numbers: the computer cars get the others
+	for h in hs:
+		taken.append(int(h.get("number", 0)))
+	for n in HUMAN_NUMBERS:
+		taken.append(n)
 	var numbers: Array[int] = []
 	for n in range(1, 100):
-		if not HUMAN_NUMBERS.has(n):
+		if not taken.has(n):
 			numbers.append(n)
 	for i in range(numbers.size() - 1, 0, -1):
 		var j := rng.randi_range(0, i)
@@ -245,9 +264,11 @@ func _make_roster() -> Array:
 			"engine": 1.0 + rng.randf_range(-ENGINE_SPREAD, ENGINE_SPREAD), "aggression": rng.randf_range(0.2, 0.95)}
 		if spots.has(k):
 			var hd: Dictionary = spots[k]
-			r["number"] = HUMAN_NUMBERS[human_i % HUMAN_NUMBERS.size()]
-			r["color"] = (HUMAN_COLORS[human_i % HUMAN_COLORS.size()] as Color).to_html(false)
-			r["trim"] = Color(0.08, 0.08, 0.1).to_html(false)
+			var num := int(hd.get("number", 0))
+			r["number"] = num if num >= 1 and num <= 99 else HUMAN_NUMBERS[human_i % HUMAN_NUMBERS.size()]
+			var sc: Array = SCHEMES[clampi(int(hd.get("scheme", human_i)), 0, SCHEMES.size() - 1)]
+			r["color"] = (sc[1] as Color).to_html(false)
+			r["trim"] = (sc[2] as Color).to_html(false)
 			r["name"] = str(hd.get("name", "Player"))
 			r["peer"] = int(hd.get("id", 1))
 			r["engine"] = 1.0

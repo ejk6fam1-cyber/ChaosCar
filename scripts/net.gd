@@ -14,8 +14,9 @@ signal lobby_changed(state: Dictionary)
 signal race_started(cfg: Dictionary)
 signal error_message(text: String)
 signal server_answered(server_protocol: int)
+signal rooms_listed(rooms: Array)
 
-const PROTOCOL := 2                  # bump when client and server must update together
+const PROTOCOL := 3                  # bump when client and server must update together
 const MAX_PLAYERS := 4
 const SEND_EVERY := 3                # physics ticks between snapshots (60 / 3 = 20 a second)
 const DEFAULT_SERVER := "wss://chaoscar.onrender.com"   # the Render server
@@ -142,7 +143,8 @@ func _new_code() -> String:
 func _room_public(room: Dictionary) -> Dictionary:
 	var players: Array = []
 	for id in room["players"]:
-		players.append({"id": id, "name": room["names"][id], "spot": room["spots"][id]})
+		players.append({"id": id, "name": room["names"][id], "spot": room["spots"][id],
+			"number": room["nums"][id], "scheme": room["schemes"][id]})
 	return {"code": room["code"], "host": room["host"], "laps": room["laps"], "grid": room["grid"],
 		"racing": room["race"] != null, "players": players}
 
@@ -164,6 +166,8 @@ func _leave_room(id: int) -> void:
 	room["players"].erase(id)
 	room["names"].erase(id)
 	room["spots"].erase(id)
+	room["nums"].erase(id)
+	room["schemes"].erase(id)
 	if room["players"].is_empty():
 		if room["race"]:
 			(room["race"] as Race).queue_free()
@@ -175,6 +179,19 @@ func _leave_room(id: int) -> void:
 	_broadcast_lobby(room)
 
 
+## A free car number: the one asked for if nobody else in the room has it, else the next free one.
+func _clean_number(n: int, taken: Dictionary) -> int:
+	n = clampi(n, 1, 99)
+	var used: Array = taken.values()
+	while used.has(n):
+		n = n % 99 + 1
+	return n
+
+
+func _clean_scheme(k: int) -> int:
+	return clampi(k, 0, Race.SCHEMES.size() - 1)
+
+
 func _clean_name(n: String) -> String:
 	n = n.strip_edges().left(14)
 	return n if n != "" else "Player"
@@ -183,7 +200,7 @@ func _clean_name(n: String) -> String:
 # ---- requests from players (they arrive at the server)
 
 @rpc("any_peer", "call_remote", "reliable")
-func req_create(player_name: String, protocol: int) -> void:
+func req_create(player_name: String, protocol: int, number: int, scheme: int) -> void:
 	if not is_server:
 		return
 	var id := multiplayer.get_remote_sender_id()
@@ -194,7 +211,8 @@ func req_create(player_name: String, protocol: int) -> void:
 	_leave_room(id)
 	var code := _new_code()
 	var room := {"code": code, "host": id, "players": [id], "names": {id: _clean_name(player_name)},
-		"spots": {id: Race.DEFAULT_SPOT}, "laps": Race.DEFAULT_LAPS, "grid": "random", "race": null}
+		"spots": {id: Race.DEFAULT_SPOT}, "nums": {id: _clean_number(number, {})},
+		"schemes": {id: _clean_scheme(scheme)}, "laps": Race.DEFAULT_LAPS, "grid": "random", "race": null}
 	_rooms[code] = room
 	_peer_room[id] = code
 	log_s("room %s created by %d" % [code, id])
@@ -202,7 +220,7 @@ func req_create(player_name: String, protocol: int) -> void:
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func req_join(code: String, player_name: String, protocol: int) -> void:
+func req_join(code: String, player_name: String, protocol: int, number: int, scheme: int) -> void:
 	if not is_server:
 		return
 	var id := multiplayer.get_remote_sender_id()
@@ -212,7 +230,7 @@ func req_join(code: String, player_name: String, protocol: int) -> void:
 		return
 	code = code.strip_edges().to_upper()
 	if not _rooms.has(code):
-		error_msg.rpc_id(id, "No race with code %s." % code)
+		error_msg.rpc_id(id, "That race has closed.")
 		return
 	var room: Dictionary = _rooms[code]
 	if room["players"].size() >= MAX_PLAYERS:
@@ -230,6 +248,8 @@ func req_join(code: String, player_name: String, protocol: int) -> void:
 	while taken.has(spot):
 		spot += 1
 	room["spots"][id] = spot
+	room["nums"][id] = _clean_number(number, room["nums"])
+	room["schemes"][id] = _clean_scheme(scheme)
 	_peer_room[id] = code
 	_broadcast_lobby(room)
 
@@ -261,13 +281,49 @@ func req_spot(spot: int) -> void:
 
 
 @rpc("any_peer", "call_remote", "reliable")
+func req_car(number: int, scheme: int) -> void:
+	var room := _sender_room()
+	if room.is_empty() or room["race"] != null:
+		return
+	var id := multiplayer.get_remote_sender_id()
+	number = clampi(number, 1, 99)
+	for other in room["players"]:
+		if other != id and room["nums"][other] == number:
+			error_msg.rpc_id(id, "#%d is taken by %s." % [number, room["names"][other]])
+			_broadcast_lobby(room)
+			return
+	room["nums"][id] = number
+	room["schemes"][id] = _clean_scheme(scheme)
+	_broadcast_lobby(room)
+
+
+## Any player: which races are open?
+@rpc("any_peer", "call_remote", "reliable")
+func req_list() -> void:
+	if not is_server:
+		return
+	var out: Array = []
+	for room: Dictionary in _rooms.values():
+		out.append({"code": room["code"], "host": room["names"].get(room["host"], "?"),
+			"players": room["players"].size(), "max": MAX_PLAYERS, "laps": room["laps"],
+			"racing": room["race"] != null})
+	room_list.rpc_id(multiplayer.get_remote_sender_id(), out)
+
+
+@rpc("authority", "call_remote", "reliable")
+func room_list(rooms: Array) -> void:
+	rooms_listed.emit(rooms)
+
+
+@rpc("any_peer", "call_remote", "reliable")
 func req_start() -> void:
 	var room := _sender_room()
 	if room.is_empty() or room["host"] != multiplayer.get_remote_sender_id() or room["race"] != null:
 		return
 	var humans: Array = []
 	for id in room["players"]:
-		humans.append({"id": id, "name": room["names"][id], "spot": room["spots"][id]})
+		humans.append({"id": id, "name": room["names"][id], "spot": room["spots"][id],
+			"number": room["nums"][id], "scheme": room["schemes"][id]})
 	var r := Race.new()
 	r.setup({"mode": "server", "laps": room["laps"], "grid": room["grid"], "humans": humans,
 		"seed": _rng.randi()})
@@ -390,12 +446,20 @@ func hello() -> void:
 	req_hello.rpc_id(1, PROTOCOL)
 
 
-func create_room(player_name: String) -> void:
-	req_create.rpc_id(1, player_name, PROTOCOL)
+func create_room(player_name: String, number: int, scheme: int) -> void:
+	req_create.rpc_id(1, player_name, PROTOCOL, number, scheme)
 
 
-func join_room(code: String, player_name: String) -> void:
-	req_join.rpc_id(1, code, player_name, PROTOCOL)
+func join_room(code: String, player_name: String, number: int, scheme: int) -> void:
+	req_join.rpc_id(1, code, player_name, PROTOCOL, number, scheme)
+
+
+func set_car(number: int, scheme: int) -> void:
+	req_car.rpc_id(1, number, scheme)
+
+
+func list_rooms() -> void:
+	req_list.rpc_id(1)
 
 
 func set_settings(new_laps: int, grid: String) -> void:

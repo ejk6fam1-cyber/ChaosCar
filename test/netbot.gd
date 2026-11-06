@@ -28,9 +28,9 @@ func _ready() -> void:
 func _on_connected() -> void:
 	print(who, " connected as ", Net.my_id())
 	if who == "create":
-		Net.create_room("Alice")
+		Net.create_room("Alice", 7, 0)
 	else:
-		Net.join_room(FileAccess.get_file_as_string("/tmp/cc_code.txt"), "Bob")
+		Net.join_room(FileAccess.get_file_as_string("/tmp/cc_code.txt"), "Bob", 7, 1)
 
 func _on_lobby(st: Dictionary) -> void:
 	print(who, " lobby: code ", st["code"], " players ", st["players"].size(), " laps ", st["laps"], " grid ", st["grid"], " racing ", st["racing"])
