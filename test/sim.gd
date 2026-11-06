@@ -13,18 +13,6 @@ var last_leader = null
 func _ready() -> void:
 	race = load("res://race.tscn").instantiate()
 	race.autopilot = true
-	# options: -- --hardcore --laps=N --blunder=LAPS
-	var cfg := {}
-	for arg in OS.get_cmdline_user_args():
-		if arg == "--hardcore":
-			cfg["hardcore"] = true
-		elif arg.begins_with("--laps="):
-			cfg["laps"] = int(arg.substr(7))
-		elif arg.begins_with("--blunder="):
-			cfg["blunder_laps"] = float(arg.substr(10))
-	if not cfg.is_empty():
-		cfg.merge({"mode": "local", "laps": 5, "grid": "custom", "humans": [{"id": 1, "name": "You", "spot": 36}], "local_id": 1})
-		race.setup(cfg)
 	add_child(race)
 func _lane(c: Car) -> int:
 	return c.lane
@@ -78,15 +66,6 @@ func _physics_process(d: float) -> void:
 				strag += 1
 				if c.draft > 0.3 or c.push > 0.0:
 					drafting += 1
-		if race.hardcore:
-			var wr := 0
-			var gone := 0
-			for c in race.cars:
-				if c.wrecked:
-					wr += 1
-				if c.out:
-					gone += 1
-			print("   HARDCORE: wrecked %d (cleared off %d), AI blunders %d" % [wr, gone, race.stats.get("blunder", 0)])
 		print("   stragglers (300 m+ back): %d, of them drafting or pushed: %d" % [strag, drafting])
 		var lens := {}
 		for c in o:

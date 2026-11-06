@@ -16,7 +16,7 @@ signal error_message(text: String)
 signal server_answered(server_protocol: int)
 signal rooms_listed(rooms: Array)
 
-const PROTOCOL := 4                  # bump when client and server must update together
+const PROTOCOL := 5                  # bump when client and server must update together
 const MAX_PLAYERS := 4
 const SEND_EVERY := 3                # physics ticks between snapshots (60 / 3 = 20 a second)
 const DEFAULT_SERVER := "wss://chaoscar.onrender.com"   # the Render server
@@ -146,7 +146,7 @@ func _room_public(room: Dictionary) -> Dictionary:
 		players.append({"id": id, "name": room["names"][id], "spot": room["spots"][id],
 			"number": room["nums"][id], "scheme": room["schemes"][id]})
 	return {"code": room["code"], "host": room["host"], "laps": room["laps"], "grid": room["grid"],
-		"hardcore": room["hardcore"], "racing": room["race"] != null, "players": players}
+		"racing": room["race"] != null, "players": players}
 
 
 func _broadcast_lobby(room: Dictionary) -> void:
@@ -212,7 +212,7 @@ func req_create(player_name: String, protocol: int, number: int, scheme: int) ->
 	var code := _new_code()
 	var room := {"code": code, "host": id, "players": [id], "names": {id: _clean_name(player_name)},
 		"spots": {id: Race.DEFAULT_SPOT}, "nums": {id: _clean_number(number, {})},
-		"schemes": {id: _clean_scheme(scheme)}, "laps": Race.DEFAULT_LAPS, "grid": "random", "hardcore": false, "race": null}
+		"schemes": {id: _clean_scheme(scheme)}, "laps": Race.DEFAULT_LAPS, "grid": "random", "race": null}
 	_rooms[code] = room
 	_peer_room[id] = code
 	log_s("room %s created by %d" % [code, id])
@@ -255,13 +255,12 @@ func req_join(code: String, player_name: String, protocol: int, number: int, sch
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func req_settings(new_laps: int, grid: String, hard: bool) -> void:
+func req_settings(new_laps: int, grid: String) -> void:
 	var room := _sender_room()
 	if room.is_empty() or room["host"] != multiplayer.get_remote_sender_id() or room["race"] != null:
 		return
 	room["laps"] = clampi(new_laps, 1, 20)
 	room["grid"] = "custom" if grid == "custom" else "random"
-	room["hardcore"] = hard
 	_broadcast_lobby(room)
 
 
@@ -327,7 +326,6 @@ func req_start() -> void:
 			"number": room["nums"][id], "scheme": room["schemes"][id]})
 	var r := Race.new()
 	r.setup({"mode": "server", "laps": room["laps"], "grid": room["grid"], "humans": humans,
-		"hardcore": room["hardcore"],
 		"seed": _rng.randi()})
 	r.name = "Race_" + room["code"]
 	add_child(r)
@@ -335,9 +333,9 @@ func req_start() -> void:
 	r.race_over.connect(_on_race_over.bind(room["code"]))
 	var roster := r.public_roster()
 	for id in room["players"]:
-		race_start.rpc_id(id, {"laps": room["laps"], "roster": roster, "local_id": id, "hardcore": room["hardcore"]})
+		race_start.rpc_id(id, {"laps": room["laps"], "roster": roster, "local_id": id})
 	_broadcast_lobby(room)
-	log_s("room %s racing: %d players, %d laps%s" % [room["code"], humans.size(), room["laps"], ", HARDCORE" if room["hardcore"] else ""])
+	log_s("room %s racing: %d players, %d laps" % [room["code"], humans.size(), room["laps"]])
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
@@ -464,8 +462,8 @@ func list_rooms() -> void:
 	req_list.rpc_id(1)
 
 
-func set_settings(new_laps: int, grid: String, hard: bool) -> void:
-	req_settings.rpc_id(1, new_laps, grid, hard)
+func set_settings(new_laps: int, grid: String) -> void:
+	req_settings.rpc_id(1, new_laps, grid)
 
 
 func pick_spot(spot: int) -> void:

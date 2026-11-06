@@ -18,15 +18,6 @@ start/finish line is on the chute between the tri-oval and turn 1.
 - After the race: the full finishing order for all 64 cars, with **Race again** (or **Back to lobby**
   online) and **Return to menu**.
 
-## Difficulty
-- **Normal:** a lane switch, by you or the AI, only happens if it still fits a split second later at
-  everyone's current speeds. Online, your screen only shows the switch straight away when the server will
-  surely accept it, so you never get snapped back.
-- **Hardcore:** your switches always happen. Moving into a car, or hitting one at more than about 18 mph,
-  wrecks both cars: they spin and slide off, and are out of the race (DNF). The computer drivers dodge
-  wrecks they see up to about 220 m ahead, after a split-second reaction, swerving up to two lanes. About
-  once every 10 laps an AI driver misjudges a move into a car alongside and starts a pile-up.
-
 ## Controls
 | Key | Action |
 |---|---|
