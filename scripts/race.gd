@@ -106,6 +106,7 @@ var _rt := -1.0                     # client: the server time being shown (a lit
 const NET_DELAY := 0.15             # client: show the race this far behind the newest snapshot, so there
 									# is always a later one to blend toward (smooth despite uneven arrival)
 signal race_over
+signal tapped(dir: int)             # you tapped left/right (the spotter listens)
 var flag := Flag.PACE
 var clock := 0.0
 var finish_order: Array[Car] = []
@@ -114,6 +115,8 @@ var lane_cars: Array = []           # per lane: its cars, front first (built in 
 var camera: Camera2D
 var track_view: TrackView
 var hud: RaceHud
+var audio: RaceAudio
+var spotter: Spotter
 var stats := {}                     # test: lane changes by reason
 var autopilot := false              # tests: the player car drives like the AI
 var rng := RandomNumberGenerator.new()
@@ -159,6 +162,14 @@ func _ready() -> void:
 		hud = RaceHud.new()
 		hud.race = self
 		add_child(hud)
+		audio = RaceAudio.new()
+		audio.race = self
+		add_child(audio)
+		spotter = Spotter.new()
+		spotter.race = self
+		spotter.hud = hud
+		spotter.audio = audio
+		add_child(spotter)
 	start()
 
 
@@ -898,9 +909,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				_tap(-1)
 			KEY_D, KEY_RIGHT:
 				_tap(1)
+			KEY_M:
+				RaceAudio.toggle_mute()
 
 
 func _tap(dir: int) -> void:
+	tapped.emit(dir)
 	if mode == "local":
 		shift(player, dir)
 	elif mode == "client" and not player.finished and flag != Flag.PACE and player.lane + dir >= 0 and player.lane + dir < LANES:
