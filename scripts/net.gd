@@ -17,7 +17,7 @@ signal error_message(text: String)
 const PROTOCOL := 2                  # bump when client and server must update together
 const MAX_PLAYERS := 4
 const SEND_EVERY := 3                # physics ticks between snapshots (60 / 3 = 20 a second)
-const DEFAULT_SERVER := "ws://localhost:9080"
+const DEFAULT_SERVER := "wss://chaoscar.onrender.com"   # the Render server
 const SETTINGS_FILE := "user://chaos_car.cfg"
 
 var is_server := false
@@ -67,8 +67,14 @@ func default_server() -> String:
 	var baked := ""
 	if FileAccess.file_exists("res://server_url.txt"):
 		baked = normalize_url(FileAccess.get_file_as_string("res://server_url.txt"))
+		if baked.contains("..."):       # the placeholder from the setup guide, not a real address
+			baked = ""
 	var saved: String = load_setting("server", "")
-	if baked != "" and (saved == "" or saved.contains("localhost") or load_setting("baked", "") != baked):
+	if baked == "":
+		baked = DEFAULT_SERVER
+	if saved.contains("...") or saved.contains("localhost"):
+		saved = ""
+	if saved == "" or load_setting("baked", "") != baked:
 		save_setting("baked", baked)
 		save_setting("server", baked)
 		return baked
