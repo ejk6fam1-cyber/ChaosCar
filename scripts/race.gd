@@ -77,6 +77,13 @@ const ROOM_AI_AHEAD := 1.0       # the computer drivers leave a little more
 const ROOM_AI_BEHIND := 2.0
 const AI_COOLDOWN := 4.0          # seconds an AI car stays put after switching (unless following its line)
 const SHIFT_WAIT := 0.35         # a blocked tap waits this long for the gap to open
+const LOOK := 0.35               # s: a lane switch must still fit this long after, at the cars' speeds
+const CLIENT_LOOK := 0.6         # s: online, your screen only shows a switch at once if it fits this long
+const HARD_HIT := 8.0            # m/s (18 mph): hardcore - a harder hit than this wrecks both cars
+const WRECK_DECEL := 18.0        # m/s^2: a wrecked car scrubbing off speed
+const AI_BLUNDER_LAPS := 10.0    # hardcore: on average one AI driver per this many laps moves into a car
+const DODGE_RANGE := 220.0       # m: how far up its lane an AI driver spots a wreck
+const WRECK_TIME := 2.5          # s: a wreck clears off the track after this (or once stopped)
 const RESTITUTION := 0.25        # bounce in a hit (0 = they stick together, 1 = billiard balls)
 const SIDE_DRAFT := 0.06         # extra drag on a car whose rear quarter has someone alongside (they steal its air)
 const TURBULENCE := 0.008        # dirty air: each car's drag wanders by up to this much (makes lines surge)
@@ -91,6 +98,10 @@ enum Flag { PACE, GREEN, WHITE, CHECKERED }
 
 var config := {}                    # see setup(); empty = single player with defaults
 var mode := "local"
+var hardcore := false               # moving into a car, or hitting one hard, wrecks both
+var wrecks := 0                     # cars wrecked so far
+var blunder_laps := AI_BLUNDER_LAPS
+var _blunder_due := false           # hardcore: an AI mistake is waiting for a car to be alongside
 var laps := DEFAULT_LAPS
 var race_length := 21405.0          # metres: laps * LAP
 var cars: Array[Car] = []
@@ -101,6 +112,7 @@ var roster: Array = []              # per grid spot: number, colours, name, peer
 var _net_clock := 0.0               # client: local clock (for lane-switch prediction)
 var _snaps: Array = []              # client: recent server snapshots, [server clock, data]
 var _rt := -1.0                     # client: the server time being shown (a little behind the newest)
+const NET_STRIDE := 6               # floats per car in a snapshot
 const NET_DELAY := 0.15             # client: show the race this far behind the newest snapshot, so there
 									# is always a later one to blend toward (smooth despite uneven arrival)
 signal race_over
@@ -139,6 +151,8 @@ func _ready() -> void:
 	mode = config.get("mode", "local")
 	laps = clampi(int(config.get("laps", DEFAULT_LAPS)), 1, 50)
 	race_length = LAP * laps
+	hardcore = bool(config.get("hardcore", false))
+	blunder_laps = float(config.get("blunder_laps", AI_BLUNDER_LAPS))     # (tests can make it more often)
 	if mode != "server":
 		TRACK_LENGTH = race_length
 	if config.has("seed"):
@@ -312,9 +326,13 @@ func _physics_process(delta: float) -> void:
 	if mode == "server":
 		return
 	for c in cars:
+		if c.wrecked:
+			c.spin += c.spin_rate * delta * clampf(c.v / 40.0, 0.15, 1.0)
+			c.modulate = Color(0.7, 0.7, 0.7)
+		c.visible = not c.out
 		c.vx = move_toward(c.vx, c.x, LATERAL * delta)
 		c.position = Oval.point(c.s, c.vx) * PPM
-		c.rotation = Oval.heading(c.s) + PI * 0.5      # cars are drawn nose-up
+		c.rotation = Oval.heading(c.s) + PI * 0.5 + c.spin     # cars are drawn nose-up
 	# camera on you, looking a little up the track
 	if player == null:
 		return
@@ -333,6 +351,15 @@ func _step(dt: float) -> void:
 		c.push_meter = push_strength(c)
 		# dirty air: a slow random wander in each car's drag
 		c.turb = clampf(c.turb * (1.0 - 0.3 * dt) + rng.randf_range(-1.0, 1.0) * TURBULENCE * sqrt(dt), -TURBULENCE, TURBULENCE)
+		if c.out:
+			continue
+		if c.wrecked:
+			c.wreck_t += dt
+			c.v = maxf(c.v - WRECK_DECEL * dt, 0.0)
+			c.s += c.v * dt
+			if c.wreck_t > WRECK_TIME or (c.v < 1.0 and c.wreck_t > 1.5):
+				c.out = true          # cleared off: out of the race
+			continue
 		if flag == Flag.PACE:
 			c.v = PACE_SPEED
 		else:
@@ -346,14 +373,20 @@ func _step(dt: float) -> void:
 			c.v = maxf(c.v + (thrust - drag) * dt, 0.0)
 		c.s += c.v * dt
 	_steer(dt)
+	if hardcore and flag != Flag.PACE and not done:
+		_ai_blunders(dt)
 	_runs(dt)
 	_bumps(dt)
 	_finishes()
 
 
 func _sort() -> void:
-	order = cars.duplicate()
+	order = cars.filter(func(c: Car) -> bool: return not c.out)
 	order.sort_custom(func(a: Car, b: Car) -> bool: return a.s > b.s)
+	var gone := cars.filter(func(c: Car) -> bool: return c.out)
+	gone.sort_custom(func(a: Car, b: Car) -> bool: return a.s > b.s)
+	for k in gone.size():
+		gone[k].place = order.size() + k + 1
 	lane_cars.resize(LANES)
 	for k in LANES:
 		lane_cars[k] = []
@@ -518,9 +551,12 @@ func _steer(dt: float) -> void:
 				h.blocked_flash = 0.4
 	if flag == Flag.PACE:
 		return
-	for c in cars:
-		if c.finished or (c.is_player and not autopilot):
+	for c in order:
+		if c.finished or c.wrecked or (c.is_player and not autopilot):
 			continue
+		# a wreck ahead in my lane: react (after a split-second, so not everyone gets clear)
+		if wrecks > 0 and c.think > 0.35 and _hazard_ahead(c, c.lane, DODGE_RANGE):
+			c.think = rng.randf_range(0.05, 0.35)     # reaction time
 		c.think -= dt
 		c.since_switch += dt
 		if c.since_switch > 1.5:
@@ -545,6 +581,24 @@ func _ai_choose(c: Car) -> void:
 	var nose := _car_ahead(c, 3.0)
 	var train := (nose != null or (tail != null and c.s - tail.s - Car.LENGTH < 3.0)) and c.line_pos <= DEEP_FROM + 2
 	var keen := 0.25 if train else 1.0
+	# a wreck ahead: dodge into a lane with no wreck in it - one lane over, or two if it's clear
+	if wrecks > 0 and _hazard_ahead(c, cur, DODGE_RANGE):
+		var tries := [cur - 1, cur + 1]
+		if rng.randf() < 0.5:
+			tries.reverse()
+		tries.append(tries[0] - (1 if tries[0] < cur else -1))
+		tries.append(tries[1] - (1 if tries[1] < cur else -1))
+		for lane: int in tries:
+			if lane < 0 or lane >= LANES or _hazard_ahead(c, lane, DODGE_RANGE):
+				continue
+			var step := cur + signi(lane - cur)
+			if absi(lane - cur) == 2 and (step < 0 or step >= LANES or not _lane_free(c, step, ROOM_AI_AHEAD, ROOM_AI_BEHIND)):
+				continue
+			if _go(c, step, "avoid"):
+				c.think = 0.15 if step != lane else rng.randf_range(0.5, 1.0)    # going two over: next lane soon
+				return
+		c.think = rng.randf_range(0.05, 0.15)    # boxed in: keep looking
+		return
 	# the car I'm drafting is moving over: go with it and keep the tow (that's how lines move)
 	var f := c.follow
 	c.follow = null
@@ -657,6 +711,51 @@ func _regroup(c: Car) -> bool:
 	return true
 
 
+## A wrecked car ahead in `lane` within `within` metres?
+func _hazard_ahead(c: Car, lane: int, within: float) -> bool:
+	for o: Car in lane_cars[lane]:
+		if o.wrecked and o.s > c.s and o.s - c.s < within:
+			return true
+	return false
+
+
+## Hardcore: now and then (about once per AI_BLUNDER_LAPS laps of the leader) an AI driver misjudges a
+## lane change and moves into a car running alongside it - and both wreck. It waits until some AI car
+## actually has a car alongside, so it always happens in traffic.
+func _ai_blunders(dt: float) -> void:
+	if not _blunder_due and not order.is_empty():
+		var lap_time := LAP / maxf(order[0].v, 30.0)
+		_blunder_due = rng.randf() < dt / (lap_time * blunder_laps)
+	if not _blunder_due:
+		return
+	var start := rng.randi_range(0, order.size() - 1)
+	for k in order.size():
+		var c := order[(start + k) % order.size()]
+		if c.is_player or c.finished or c.wrecked:
+			continue
+		for dl: int in ([-1, 1] if rng.randf() < 0.5 else [1, -1]):
+			var ln := c.lane + dl
+			if ln < 0 or ln >= LANES:
+				continue
+			for o: Car in lane_cars[ln]:
+				if not o.wrecked and absf(o.s - c.s) < Car.LENGTH * 0.9:
+					_blunder_due = false
+					_go(c, ln, "blunder", false, true)
+					return
+
+
+## Hardcore: crash a car. It spins, scrubs off speed and slides to a stop, then is cleared off.
+func _wreck(c: Car) -> void:
+	if c.wrecked or c.out or c.finished:
+		return
+	c.wrecked = true
+	c.wreck_t = 0.0
+	c.spin_rate = rng.randf_range(4.0, 9.0) * (1.0 if rng.randf() < 0.5 else -1.0)
+	c.throttle = 0.0
+	c.shift_dir = 0
+	wrecks += 1
+
+
 ## The nearest car directly ahead (same lane), within `within` metres.
 func _car_ahead(c: Car, within: float) -> Car:
 	if c.lane_idx <= 0:
@@ -698,11 +797,17 @@ func _lane_score(c: Car, lane: int) -> float:
 
 ## Switch `c` into `lane` (one of the 7 fixed lanes) - instantly, and only if there's room there.
 ## A car is always in exactly one lane, so nobody can get stuck between two.
-func _go(c: Car, lane: int, why := "", tight := false) -> bool:
+func _go(c: Car, lane: int, why := "", tight := false, force := false) -> bool:
 	if lane < 0 or lane >= LANES or lane == c.lane:
 		return false
+	if c.wrecked or c.out:
+		return false
 	var human := (c.is_player and not autopilot) or tight
-	if not _lane_free(c, lane, -0.05 if tight else (ROOM_PLAYER if human else ROOM_AI_AHEAD), ROOM_PLAYER if human else ROOM_AI_BEHIND):
+	var player_move := c.is_player and not autopilot
+	if force or (hardcore and player_move):
+		pass      # hardcore: your move always happens - if there's a car there, you both wreck
+	elif not _lane_free(c, lane, -0.05 if tight else (ROOM_PLAYER if human else ROOM_AI_AHEAD),
+			ROOM_PLAYER if human else ROOM_AI_BEHIND, 0.0 if tight else LOOK):
 		return false
 	# the car drafting me in the old lane gets a moment to decide whether to follow
 	var tail := _car_ahead_of(c)
@@ -717,6 +822,12 @@ func _go(c: Car, lane: int, why := "", tight := false) -> bool:
 	if lane_cars.size() == LANES:
 		_relane(c, c.from_lane, lane)
 	c.target_x = c.x
+	if hardcore:
+		for o: Car in lane_cars[lane]:
+			if o != c and not o.out and absf(o.s - c.s) < Car.LENGTH - 0.3:
+				stats["wreck_merge"] = stats.get("wreck_merge", 0) + 1
+				_wreck(c)       # moved into a car: both wrecked
+				_wreck(o)
 	return true
 
 
@@ -762,20 +873,31 @@ func _lane_count(lane: int) -> int:
 
 
 ## Nobody in `lane` within `ahead` metres of my nose or `behind` metres of my tail.
-func _lane_free(c: Car, lane: int, ahead: float, behind: float) -> bool:
+## Is there room in `lane`: nobody within `ahead` m of my nose or `behind` m of my tail - now, and (with
+## `look` > 0) still `look` seconds from now at everyone's current speeds, so a gap that's closing doesn't
+## count. Wrecked cars count as in the way.
+func _lane_free(c: Car, lane: int, ahead: float, behind: float, look := 0.0) -> bool:
+	if lane < 0 or lane >= LANES:
+		return false
 	for o in cars:
-		if o == c or o.lane != lane or o.finished:
+		if o == c or o.lane != lane or o.out or (o.finished and not o.wrecked):
 			continue
 		var d := o.s - c.s
 		if d < Car.LENGTH + ahead and -d < Car.LENGTH + behind:
 			return false
+		if look > 0.0:
+			var d2 := d + (o.v - c.v) * look
+			if signf(d) != signf(d2):
+				return false            # we'd pass through each other
+			if d2 < Car.LENGTH + ahead and -d2 < Car.LENGTH + behind:
+				return false
 	return true
 
 
 ## The player's lane switch: one lane per tap. Speed is untouched - whatever you built up
 ## in the draft carries into the new lane.
 func shift(c: Car, dir: int) -> void:
-	if c == null or c.finished or autopilot or flag == Flag.PACE:
+	if c == null or c.finished or c.wrecked or c.out or autopilot or flag == Flag.PACE:
 		return
 	if _go(c, c.lane + dir):
 		c.shift_dir = 0
@@ -806,6 +928,9 @@ func _path_clear(c: Car, tx: float) -> bool:
 ## then let the draft suck them back up with a head of steam, and pull out to pass (see _ai_choose).
 func _runs(dt: float) -> void:
 	for c in cars:
+		if c.wrecked or c.out:
+			c.throttle = 0.0
+			continue
 		if c.is_player and not autopilot:
 			c.throttle = 1.0
 			continue
@@ -846,6 +971,11 @@ func _bumps(_dt: float) -> void:
 					continue
 				b.s = a.s - Car.LENGTH
 				var rel := b.v - a.v
+				if hardcore and rel > HARD_HIT:
+					if not (a.wrecked and b.wrecked):
+						stats["wreck_hit"] = stats.get("wreck_hit", 0) + 1
+					_wreck(a)
+					_wreck(b)
 				if rel > 0.0:
 					var mid := (a.v + b.v) * 0.5
 					var e := RESTITUTION if rel > 0.5 else 0.0     # a real hit bounces, a lean just pushes
@@ -856,22 +986,33 @@ func _bumps(_dt: float) -> void:
 
 func _finishes() -> void:
 	for c in order:
-		if not c.finished and c.s >= race_length:
+		if not c.finished and not c.wrecked and c.s >= race_length:
 			c.finished = true
 			c.finish_time = clock
 			finish_order.append(c)
 			c.target_x = lane_x(c.lane)
+	if order.is_empty():
+		return
 	if flag == Flag.GREEN and order[0].s > race_length - LAP:
 		flag = Flag.WHITE
 	if flag != Flag.CHECKERED and not finish_order.is_empty():
 		flag = Flag.CHECKERED
 	# race over once everyone is home, or 60 s after the winner (stragglers get their running order)
-	if not done and (finish_order.size() == cars.size() or (not finish_order.is_empty() and clock - finish_order[0].finish_time > 60.0)):
+	var gone := 0
+	for c in cars:
+		if (c.out or c.wrecked) and not c.finished:
+			gone += 1
+	if not done and (finish_order.size() + gone >= cars.size() or (not finish_order.is_empty() and clock - finish_order[0].finish_time > 60.0)):
 		done = true
 		for c in order:
-			if not c.finished:
+			if not c.finished and not c.wrecked:
 				finish_order.append(c)
 				c.finish_time = -1.0     # still running
+		var dnf := cars.filter(func(c: Car) -> bool: return (c.out or c.wrecked) and not finish_order.has(c))
+		dnf.sort_custom(func(a: Car, b: Car) -> bool: return a.s > b.s)
+		for c: Car in dnf:
+			finish_order.append(c)
+			c.finish_time = -2.0         # wrecked: DNF
 		race_over.emit()
 
 
@@ -889,10 +1030,12 @@ func _unhandled_input(event: InputEvent) -> void:
 func _tap(dir: int) -> void:
 	if mode == "local":
 		shift(player, dir)
-	elif mode == "client" and not player.finished and flag != Flag.PACE:
+	elif mode == "client" and not player.finished and flag != Flag.PACE and player.lane + dir >= 0 and player.lane + dir < LANES:
 		Net.send_tap(dir)
 		# show the switch straight away if it's clearly open; the server has the final say
-		if _lane_free(player, player.lane + dir, ROOM_PLAYER, ROOM_PLAYER) and player.lane + dir >= 0 and player.lane + dir < LANES:
+		if player.wrecked or player.out:
+			return
+		if hardcore or _lane_free(player, player.lane + dir, ROOM_PLAYER + 1.0, ROOM_PLAYER + 1.5, CLIENT_LOOK):
 			player.lane += dir
 			player.x = lane_x(player.lane)
 			player.pred_until = _net_clock + 0.6
@@ -901,20 +1044,21 @@ func _tap(dir: int) -> void:
 # ------------------------------------------------------------------ online
 
 ## Server: the state every online player needs, ~20 times a second.
-## Per car: s, lane, v, draft meter, push meter.  Header: clock, flag.
+## Per car: s, lane, v, draft meter, push meter, state (0 racing, 1 wrecked, 2 out).  Header: clock, flag.
 func snapshot() -> PackedFloat32Array:
 	var out := PackedFloat32Array()
-	out.resize(2 + cars.size() * 5)
+	out.resize(2 + cars.size() * NET_STRIDE)
 	out[0] = clock
 	out[1] = float(flag)
 	for i in cars.size():
 		var c := cars[i]
-		var k := 2 + i * 5
+		var k := 2 + i * NET_STRIDE
 		out[k] = c.s
 		out[k + 1] = float(c.lane)
 		out[k + 2] = c.v
 		out[k + 3] = c.draft_meter
 		out[k + 4] = c.push_meter
+		out[k + 5] = 2.0 if c.out else (1.0 if c.wrecked else 0.0)
 	return out
 
 
@@ -930,7 +1074,7 @@ func finish_data() -> Array:
 
 ## Client: a snapshot from the server.
 func apply_snapshot(data: PackedFloat32Array, fin_idx: PackedInt32Array, fin_t: PackedFloat32Array) -> void:
-	if data.size() < 2 + cars.size() * 5:
+	if data.size() < 2 + cars.size() * NET_STRIDE:
 		return
 	if not _snaps.is_empty() and data[0] <= _snaps.back()[0]:
 		return      # an old one arriving late
@@ -940,10 +1084,16 @@ func apply_snapshot(data: PackedFloat32Array, fin_idx: PackedInt32Array, fin_t: 
 	flag = int(data[1]) as Flag
 	for i in cars.size():
 		var c := cars[i]
-		var k := 2 + i * 5
+		var k := 2 + i * NET_STRIDE
 		c.net_t = _net_clock
 		c.draft_meter = data[k + 3]
 		c.push_meter = data[k + 4]
+		var stt := int(data[k + 5])
+		if stt >= 1 and not c.wrecked:
+			c.wrecked = true
+			c.spin_rate = randf_range(4.0, 9.0) * (1.0 if randf() < 0.5 else -1.0)
+			wrecks += 1
+		c.out = stt == 2
 	if fin_idx.size() != finish_order.size():
 		finish_order.clear()
 		for j in fin_idx.size():
@@ -983,7 +1133,7 @@ func _follow_server(delta: float) -> void:
 	var ahead := clampf(_rt - tb, 0.0, 0.25) if tb <= ta or _rt > tb else 0.0   # past the newest: guess a little
 	for i in cars.size():
 		var c := cars[i]
-		var k := 2 + i * 5
+		var k := 2 + i * NET_STRIDE
 		c.v = lerpf(da[k + 2], db[k + 2], alpha)
 		c.s = lerpf(da[k], db[k], alpha) + c.v * ahead
 		var lane := int(db[k + 1]) if alpha >= 0.5 else int(da[k + 1])

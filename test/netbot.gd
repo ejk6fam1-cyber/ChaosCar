@@ -39,7 +39,7 @@ func _on_lobby(st: Dictionary) -> void:
 		f.store_string(st["code"])
 		f.close()
 		if st["laps"] != 1:
-			Net.set_settings(1, "random")
+			Net.set_settings(1, "random", OS.get_cmdline_user_args().has("--hardcore"))
 			Net.pick_spot(3)
 		elif st["players"].size() >= (1 if OS.get_cmdline_user_args().has("--solo") else 2) and not started and not st["racing"]:
 			started = true

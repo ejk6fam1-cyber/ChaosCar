@@ -18,6 +18,7 @@ var _sp_spot: SpinBox
 var _sp_spot_row: Control
 var _sp_num: SpinBox
 var _sp_scheme: OptionButton
+var _sp_diff: OptionButton
 # online
 var _on_name: LineEdit
 var _on_server: LineEdit
@@ -35,6 +36,7 @@ var _lb_spot_row: Control
 var _lb_host_box: Control
 var _lb_laps: SpinBox
 var _lb_grid: OptionButton
+var _lb_diff: OptionButton
 var _lb_settings_txt: Label
 var _lb_start: Button
 
@@ -117,6 +119,9 @@ func _build_ui() -> void:
 	_sp_spot.value_changed.connect(func(v: float) -> void: sp_desc.text = _spot_text(int(v)))
 	_sp_grid.item_selected.connect(func(_i: int) -> void: _sp_spot_row.visible = _sp_grid.selected == 1)
 	_sp_spot_row.visible = false
+	_sp_diff = _diff_option(_row(s, "Difficulty"))
+	_sp_diff.selected = Net.load_setting("hardcore", 0)
+	_sp_diff.item_selected.connect(func(i: int) -> void: Net.save_setting("hardcore", i))
 	var r2 := _row(s, "Your car  #")
 	_sp_num = _spin(r2, 1, 99, Net.load_setting("number", 7))
 	_sp_scheme = _scheme_option(r2)
@@ -183,8 +188,10 @@ func _build_ui() -> void:
 	_lb_host_box = _row(l, "Laps")
 	_lb_laps = _spin(_lb_host_box, 1, 20, Race.DEFAULT_LAPS)
 	_lb_grid = _grid_option(_lb_host_box)
-	_lb_laps.value_changed.connect(func(_v: float) -> void: Net.set_settings(int(_lb_laps.value), _grid_key(_lb_grid)))
-	_lb_grid.item_selected.connect(func(_i: int) -> void: Net.set_settings(int(_lb_laps.value), _grid_key(_lb_grid)))
+	_lb_diff = _diff_option(_row(l, "Difficulty"))
+	_lb_laps.value_changed.connect(func(_v: float) -> void: _send_settings())
+	_lb_grid.item_selected.connect(func(_i: int) -> void: _send_settings())
+	_lb_diff.item_selected.connect(func(_i: int) -> void: _send_settings())
 	_lb_settings_txt = _text(l, "", 16, Color(1, 1, 1, 0.85))
 	_lb_settings_txt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	var b2 := _hrow(l)
@@ -318,6 +325,19 @@ func _scheme_option(parent: Node) -> OptionButton:
 	return ob
 
 
+func _diff_option(parent: Node) -> OptionButton:
+	var ob := OptionButton.new()
+	ob.add_item("Normal")
+	ob.add_item("Hardcore (wrecks)")
+	ob.custom_minimum_size = Vector2(170, 32)
+	parent.add_child(ob)
+	return ob
+
+
+func _send_settings() -> void:
+	Net.set_settings(int(_lb_laps.value), _grid_key(_lb_grid), _lb_diff.selected == 1)
+
+
 func _grid_key(ob: OptionButton) -> String:
 	return "custom" if ob.selected == 1 else "random"
 
@@ -344,7 +364,7 @@ func _car_changed(num: SpinBox, scheme: OptionButton, online: bool) -> void:
 func _start_single() -> void:
 	_local_cfg = {"mode": "local", "laps": int(_sp_laps.value), "grid": _grid_key(_sp_grid),
 		"humans": [{"id": 1, "name": "You", "spot": int(_sp_spot.value), "number": int(_sp_num.value),
-			"scheme": _sp_scheme.selected}], "local_id": 1}
+			"scheme": _sp_scheme.selected}], "local_id": 1, "hardcore": _sp_diff.selected == 1}
 	_launch(_local_cfg)
 
 
@@ -521,10 +541,13 @@ func _on_lobby(st: Dictionary) -> void:
 	_lb_code.text = "%s's race  -  %d/%d players.  Give the code to the other drivers." % [host_name, st["players"].size(), Net.MAX_PLAYERS]
 	_lb_players.text = "\n".join(lines)
 	_lb_host_box.visible = host
+	_lb_diff.get_parent().visible = host
+	_lb_diff.selected = 1 if st.get("hardcore", false) else 0
 	_lb_laps.set_value_no_signal(st["laps"])
 	_lb_grid.selected = 1 if st["grid"] == "custom" else 0
 	_lb_settings_txt.visible = not host
-	_lb_settings_txt.text = "%d laps   -   %s" % [st["laps"], "pick your spot" if st["grid"] == "custom" else "random starting spots"]
+	_lb_settings_txt.text = "%d laps   -   %s   -   %s" % [st["laps"], "pick your spot" if st["grid"] == "custom" else "random starting spots",
+		"HARDCORE: hit someone and you both wreck" if st.get("hardcore", false) else "normal"]
 	_lb_spot_row.visible = st["grid"] == "custom"
 	for p in st["players"]:
 		if p["id"] == me:
@@ -547,4 +570,5 @@ func _car_changed_preview_only() -> void:
 
 
 func _on_race_started(cfg: Dictionary) -> void:
-	_launch({"mode": "client", "laps": cfg["laps"], "roster": cfg["roster"], "local_id": cfg["local_id"]})
+	_launch({"mode": "client", "laps": cfg["laps"], "roster": cfg["roster"], "local_id": cfg["local_id"],
+		"hardcore": cfg.get("hardcore", false)})

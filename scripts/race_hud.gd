@@ -114,6 +114,8 @@ func _process(_delta: float) -> void:
 	var p := race.player
 	var leader := race.order[0]
 	var gap := "Leading!" if leader == p else "Gap: %.1f car lengths" % ((leader.s - p.s) / Car.LENGTH)
+	if p.wrecked or p.out:
+		gap = "WRECKED - out of the race"
 	_info.text = "P%d / %d\nLap %d / %d\n%d MPH\n%s" % [p.place, race.cars.size(), race.lap_of(maxf(p.s, 0.0)), race.laps, int(p.v * Race.MPH), gap]
 	match race.flag:
 		Race.Flag.PACE:
@@ -131,7 +133,7 @@ func _process(_delta: float) -> void:
 	_lights.queue_redraw()
 	_radar.queue_redraw()
 	_map.queue_redraw()
-	if (p.finished or race.done) and not _standings.visible:
+	if (p.finished or p.out or race.done) and not _standings.visible:
 		_standings.visible = true
 	if _standings.visible:
 		_flag.text = ""
@@ -168,6 +170,8 @@ func _draw_board() -> void:
 	var font := ThemeDB.fallback_font
 	var me := race.finish_order.find(race.player) + 1
 	var title := "FINISHED  P%d" % me if me > 0 else "RESULTS"
+	if race.player.wrecked or race.player.out:
+		title = "WRECKED - DNF"
 	_board.draw_string(font, Vector2(20, 34), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 24, Color(1, 0.85, 0.2))
 	if not race.done:
 		_board.draw_string(font, Vector2(300, 34), "cars still finishing...", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(1, 1, 1, 0.6))
@@ -182,7 +186,9 @@ func _draw_board() -> void:
 		if i < race.finish_order.size():
 			var c: Car = race.finish_order[i]
 			var t := ""
-			if c.finish_time < 0.0:
+			if c.finish_time <= -2.0:
+				t = "DNF (wreck)"
+			elif c.finish_time < 0.0:
 				t = "running"
 			elif i == 0:
 				t = "%d:%04.1f" % [int(c.finish_time) / 60, fmod(c.finish_time, 60.0)]
@@ -214,6 +220,8 @@ func _draw_radar() -> void:
 	var cy := track.position.y + track.size.y * 0.6
 	var scale := (track.size.y * 0.5) / RADAR_RANGE
 	for c in race.cars:
+		if c.out:
+			continue
 		if c == p:
 			continue
 		var py := cy - (c.s - p.s) * scale
@@ -252,6 +260,8 @@ func _draw_map() -> void:
 	var f1 := xf * Oval.point(0.0, Race.half_width())
 	_map.draw_line(f0 + (f0 - f1).normalized() * 3.0, f1 + (f1 - f0).normalized() * 3.0, Color.WHITE, 2.0)
 	for c in race.cars:
+		if c.out:
+			continue
 		if c == race.player:
 			continue
 		if c.is_player:
