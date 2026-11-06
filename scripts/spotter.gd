@@ -6,7 +6,7 @@ extends Node
 ##  "Clear outside" / "Clear inside" / "All clear"     they've gone
 ##  "Still there!"                                     still alongside (every 3 s, or when you tap into them)
 ##  "Car coming outside/inside"                        closing fast in the next lane
-##  "Got a pusher" / "Lost the draft"                  your draft and push
+##  "You got help" / "Lost the draft"                  your draft and push
 ##  "You're the leader!" / "White flag - last lap!" / "Checkered! P5"
 ## Outside = the lane to your right (toward the wall), inside = to your left (toward the infield).
 
@@ -119,7 +119,7 @@ func _process(delta: float) -> void:
 	_push_t -= delta
 	var has_push := p.push_meter > 0.05
 	if has_push and not _had_push and _push_t <= 0.0:
-		say("Got a pusher")
+		say("You got help")
 		_push_t = 8.0
 	_had_push = has_push
 	var has_draft := p.draft_meter > 0.45
