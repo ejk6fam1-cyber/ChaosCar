@@ -80,12 +80,17 @@ var player: Car                     # the car this computer follows (null on the
 var humans := {}                    # peer id -> Car (online)
 var done := false                   # every car home (or long enough after the winner)
 var roster: Array = []              # per grid spot: number, colours, name, peer (sent to online players)
-var _net_clock := 0.0               # client: local clock for snapshot extrapolation
+var _net_clock := 0.0               # client: local clock (for lane-switch prediction)
+var _snaps: Array = []              # client: recent server snapshots, [server clock, data]
+var _rt := -1.0                     # client: the server time being shown (a little behind the newest)
+const NET_DELAY := 0.15             # client: show the race this far behind the newest snapshot, so there
+									# is always a later one to blend toward (smooth despite uneven arrival)
 signal race_over
 var flag := Flag.PACE
 var clock := 0.0
 var finish_order: Array[Car] = []
 var order: Array[Car] = []          # sorted by distance, leader first
+var lane_cars: Array = []           # per lane: its cars, front first (built in _sort, kept up to date by _go)
 var camera: Camera2D
 var track_view: TrackView
 var hud: RaceHud
@@ -324,8 +329,32 @@ func _step(dt: float) -> void:
 func _sort() -> void:
 	order = cars.duplicate()
 	order.sort_custom(func(a: Car, b: Car) -> bool: return a.s > b.s)
+	lane_cars.resize(LANES)
+	for k in LANES:
+		lane_cars[k] = []
 	for i in order.size():
-		order[i].place = i + 1
+		var c := order[i]
+		c.place = i + 1
+		var lst: Array = lane_cars[c.lane]
+		c.lane_idx = lst.size()
+		lst.append(c)
+
+
+## Move a car between lane lists (keeps them sorted, front first).
+func _relane(c: Car, old_lane: int, new_lane: int) -> void:
+	var a: Array = lane_cars[old_lane]
+	a.erase(c)
+	for k in a.size():
+		a[k].lane_idx = k
+	var b: Array = lane_cars[new_lane]
+	var at := b.size()
+	for k in b.size():
+		if b[k].s < c.s:
+			at = k
+			break
+	b.insert(at, c)
+	for k in b.size():
+		b[k].lane_idx = k
 
 
 ## Drag multiplier from drafting, being pushed and the pack bubble (1 = alone in clean air).
@@ -365,76 +394,87 @@ func _aero() -> void:
 			var g := order[i - 1].s - c.s
 			group_wake = clampf(g / 80.0, 0.0, 1.0) * exp(-maxf(g - 300.0, 0.0) / WAKE_RANGE)
 		c.wake = group_wake
+	# pack bubble: weighted count of cars ahead (any lane) within BUBBLE_RANGE, as a sliding window
+	var w_start := 0
+	var w_sum := 0.0          # sum of s over the window (cars ahead of i within range)
 	for i in order.size():
 		var c := order[i]
+		while w_start < i and order[w_start].s - c.s > BUBBLE_RANGE:
+			w_sum -= order[w_start].s
+			w_start += 1
+		var cnt := i - w_start
+		# sum over the window of (1 - (s_j - s_c) / range)
+		c.bubble = minf((cnt - (w_sum - cnt * c.s) / BUBBLE_RANGE) / BUBBLE_CARS, 1.0) if cnt > 0 else 0.0
+		w_sum += c.s
+	var side_ptr: Array[int] = []       # per lane: first car (front first) that is behind the current car
+	side_ptr.resize(LANES)
+	side_ptr.fill(0)
+	for i in order.size():
+		var c := order[i]
+		var lst: Array = lane_cars[c.lane]
+		var li := c.lane_idx
 		c.draft = 0.0
 		c.push = 0.0
 		c.line_behind = 0
-		# draft: the car ahead most in line with us, plus a little extra from a second one further up the line
+		# draft: the car ahead in my lane pulling hardest, plus a little from a second one further up
 		var first := 0.0
 		var second := 0.0
 		var bonus := 1.0
-		for j in range(i - 1, -1, -1):
-			var a := order[j]
+		for j in range(li - 1, -1, -1):
+			var a: Car = lst[j]
 			var gap := a.s - c.s - Car.LENGTH
 			if gap > DRAFT_RANGE * 5.0:
 				break
-			var o := overlap(a, c)
-			if o > 0.0:
-				# a long line punches a bigger, longer hole in the air: chasing one from behind (not
-				# already on its bumper) the tow reaches further and pulls harder - enough to catch it
-				var n := float(mini(a.line_pos + 1, 12))
-				var chasing := gap > LINE_TOUCH
-				var f := o * exp(-maxf(gap, 0.0) / (DRAFT_RANGE * (1.0 + (TOW_REACH * n if chasing else 0.0))))
-				if f > first:
-					second = first
-					first = f
-					bonus = 1.0 + DRAFT_LINE * n if chasing else 1.0
-				elif f > second:
-					second = f
+			# nothing further up can pull harder than the two we already have: stop looking
+			if second > 0.0 and exp(-maxf(gap, 0.0) / (DRAFT_RANGE * (1.0 + TOW_REACH * 12.0))) <= second:
+				break
+			# a long line punches a bigger, longer hole in the air: chasing one from behind (not
+			# already on its bumper) the tow reaches further and pulls harder - enough to catch it
+			var n := float(mini(a.line_pos + 1, 12))
+			var chasing := gap > LINE_TOUCH
+			var f := exp(-maxf(gap, 0.0) / (DRAFT_RANGE * (1.0 + (TOW_REACH * n if chasing else 0.0))))
+			if f > first:
+				second = first
+				first = f
+				bonus = 1.0 + DRAFT_LINE * n if chasing else 1.0
+			elif f > second:
+				second = f
 		c.draft = minf(first + second * 0.25, 1.0)
 		c.draft_eff = minf(c.draft * bonus, DRAFT_CAP)
-		# place in a nose-to-tail line (deep in a long line the air gets dirty)
+		# place in a nose-to-tail line
 		c.line_pos = 0
-		for j in range(i - 1, -1, -1):
-			var a := order[j]
-			if a.s - c.s > Car.LENGTH + 8.0:
-				break
-			if a.lane == c.lane:
-				if a.s - c.s - Car.LENGTH < 6.0:
-					c.line_pos = a.line_pos + 1
-				break
-		# pack bubble: cars ahead in any lane, the close ones counting most
-		var n := 0.0
-		for j in range(i - 1, -1, -1):
-			var d := order[j].s - c.s
-			if d > BUBBLE_RANGE:
-				break
-			n += 1.0 - d / BUBBLE_RANGE
-		c.bubble = minf(n / BUBBLE_CARS, 1.0)
+		if li > 0:
+			var a: Car = lst[li - 1]
+			if a.s - c.s <= Car.LENGTH + 8.0 and a.s - c.s - Car.LENGTH < 6.0:
+				c.line_pos = a.line_pos + 1
 		# side draft: someone alongside my rear quarter (in the next lane) steals my air
 		c.side = 0.0
-		for j in range(i + 1, order.size()):
-			var b := order[j]
-			var back := c.s - b.s
-			if back > Car.LENGTH:
+		for dl in [-1, 1]:
+			var ln: int = c.lane + dl
+			if ln < 0 or ln >= LANES:
+				continue
+			var lc: Array = lane_cars[ln]
+			while side_ptr[ln] < lc.size() and lc[side_ptr[ln]].s >= c.s:
+				side_ptr[ln] += 1
+			for k in range(side_ptr[ln], lc.size()):
+				var back: float = c.s - lc[k].s
+				if back > Car.LENGTH:
+					break
+				if back > Car.LENGTH * 0.15:
+					c.side = 1.0
+					break
+			if c.side > 0.0:
 				break
-			var dx := absf(b.x - c.x)
-			if dx > Car.WIDTH and dx < LANE_W * 1.6 and back > Car.LENGTH * 0.15:
-				c.side = 1.0
-				break
-		# push: the car close behind us, and how long the line behind it is
+		# push: cars nose-to-tail on my bumper, and how long that chain is
 		var last := c
-		for j in range(i + 1, order.size()):
-			var b := order[j]
-			var gap := last.s - b.s - Car.LENGTH
-			if c.s - b.s > 100.0:
+		for j in range(li + 1, lst.size()):
+			var b: Car = lst[j]
+			if c.s - b.s > 100.0 or last.s - b.s - Car.LENGTH >= LINE_TOUCH:
 				break
-			if gap < LINE_TOUCH and overlap(last, b) > 0.5:
-				if last == c:
-					c.push = 1.0
-				c.line_behind += 1
-				last = b
+			if last == c:
+				c.push = 1.0
+			c.line_behind += 1
+			last = b
 
 
 ## Lane changes: the player's keys, or the AI's choice. Never slide into a car alongside.
@@ -559,18 +599,12 @@ func _ai_choose(c: Car) -> void:
 		_go(c, best, "score")
 
 
-## The nearest car directly ahead (lined up), within `within` metres.
+## The nearest car directly ahead (same lane), within `within` metres.
 func _car_ahead(c: Car, within: float) -> Car:
-	var best: Car = null
-	var bd := within
-	for o in cars:
-		if o == c or o.s <= c.s or overlap(o, c) < 0.5:
-			continue
-		var gap := o.s - c.s - Car.LENGTH
-		if gap < bd:
-			bd = gap
-			best = o
-	return best
+	if c.lane_idx <= 0:
+		return null
+	var o: Car = lane_cars[c.lane][c.lane_idx - 1]
+	return o if o.s - c.s - Car.LENGTH < within else null
 
 
 ## How good a lane looks: a close car to draft, a long line, a line that's moving faster than us.
@@ -622,22 +656,22 @@ func _go(c: Car, lane: int, why := "", tight := false) -> bool:
 	c.from_lane = c.lane
 	c.lane = lane
 	c.x = lane_x(lane)
+	if lane_cars.size() == LANES:
+		_relane(c, c.from_lane, lane)
 	c.target_x = c.x
 	return true
 
 
 ## The car right behind `c` in its lane (within 16 m), if any.
 func _car_ahead_of(c: Car) -> Car:
-	var best: Car = null
-	var bd := 16.0
-	for o in cars:
-		if o == c or o.lane != c.lane or o.s >= c.s or o.finished:
-			continue
-		var gap := c.s - o.s - Car.LENGTH
-		if gap < bd:
-			bd = gap
-			best = o
-	return best
+	var lst: Array = lane_cars[c.lane]
+	for j in range(c.lane_idx + 1, lst.size()):
+		var o: Car = lst[j]
+		if c.s - o.s - Car.LENGTH >= 16.0:
+			return null
+		if not o.finished:
+			return o
+	return null
 
 
 ## Is the line `c` is in at (or near) the front of the field? (that's the one that's running away)
@@ -793,7 +827,7 @@ func _tap(dir: int) -> void:
 		if _lane_free(player, player.lane + dir, ROOM_PLAYER, ROOM_PLAYER) and player.lane + dir >= 0 and player.lane + dir < LANES:
 			player.lane += dir
 			player.x = lane_x(player.lane)
-			player.pred_until = _net_clock + 0.35
+			player.pred_until = _net_clock + 0.6
 
 
 # ------------------------------------------------------------------ online
@@ -830,18 +864,16 @@ func finish_data() -> Array:
 func apply_snapshot(data: PackedFloat32Array, fin_idx: PackedInt32Array, fin_t: PackedFloat32Array) -> void:
 	if data.size() < 2 + cars.size() * 5:
 		return
-	clock = data[0]
+	if not _snaps.is_empty() and data[0] <= _snaps.back()[0]:
+		return      # an old one arriving late
+	_snaps.append([data[0], data])
+	if _snaps.size() > 30:
+		_snaps.pop_front()
 	flag = int(data[1]) as Flag
 	for i in cars.size():
 		var c := cars[i]
 		var k := 2 + i * 5
-		c.net_s = data[k]
-		c.net_v = data[k + 2]
 		c.net_t = _net_clock
-		var lane := int(data[k + 1])
-		if lane != c.lane and not (c == player and _net_clock < player.pred_until):
-			c.lane = lane
-			c.x = lane_x(lane)
 		c.draft_meter = data[k + 3]
 		c.push_meter = data[k + 4]
 	if fin_idx.size() != finish_order.size():
@@ -853,15 +885,46 @@ func apply_snapshot(data: PackedFloat32Array, fin_idx: PackedInt32Array, fin_t: 
 			finish_order.append(c)
 
 
-## Client: glide every car toward where the server says it is now (extrapolated from its last speed).
+## Client: show the race NET_DELAY behind the newest snapshot, blending between the two snapshots
+## either side of that moment. Snapshots arrive unevenly over the internet; blending between real
+## positions (instead of guessing ahead from the last one) keeps the motion smooth.
 func _follow_server(delta: float) -> void:
-	for c in cars:
-		var target := c.net_s + c.net_v * (_net_clock - c.net_t)
-		if absf(target - c.s) > 12.0:
-			c.s = target
-		else:
-			c.s = lerpf(c.s + c.v * delta, target, 0.2)
-		c.v = c.net_v
+	if _snaps.is_empty():
+		return
+	var newest: float = _snaps.back()[0]
+	var target := newest - NET_DELAY
+	if _rt < 0.0 or absf(target - _rt) > 0.75:
+		_rt = target
+	else:
+		_rt += delta
+		_rt += (target - _rt) * minf(delta * 2.0, 1.0)     # drift gently back on schedule
+	clock = maxf(_rt, 0.0)
+	# the two snapshots either side of _rt
+	var a: Array = _snaps[0]
+	var b: Array = _snaps[0]
+	for k in range(_snaps.size() - 1, -1, -1):
+		if _snaps[k][0] <= _rt:
+			a = _snaps[k]
+			b = _snaps[mini(k + 1, _snaps.size() - 1)]
+			break
+	var ta: float = a[0]
+	var tb: float = b[0]
+	var da: PackedFloat32Array = a[1]
+	var db: PackedFloat32Array = b[1]
+	var alpha := clampf((_rt - ta) / (tb - ta), 0.0, 1.0) if tb > ta else 0.0
+	var ahead := clampf(_rt - tb, 0.0, 0.25) if tb <= ta or _rt > tb else 0.0   # past the newest: guess a little
+	for i in cars.size():
+		var c := cars[i]
+		var k := 2 + i * 5
+		c.v = lerpf(da[k + 2], db[k + 2], alpha)
+		c.s = lerpf(da[k], db[k], alpha) + c.v * ahead
+		var lane := int(db[k + 1]) if alpha >= 0.5 else int(da[k + 1])
+		if lane != c.lane and not (c == player and _net_clock < player.pred_until):
+			c.lane = lane
+			c.x = lane_x(lane)
+	# drop snapshots we're well past
+	while _snaps.size() > 2 and _snaps[1][0] < _rt - 0.5:
+		_snaps.pop_front()
 	_sort()
 
 

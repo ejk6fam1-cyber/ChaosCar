@@ -28,6 +28,7 @@ var follow: Car = null       # AI: the car I was drafting just switched lanes - 
 var since_switch := 9.0      # AI: seconds since its last lane change
 var rushed := false          # AI: already reacted to closing on the car ahead
 var vx := 0.0                # drawn sideways position: slides to x in about a tenth of a second
+var lane_idx := 0            # my index in Race.lane_cars[lane] (front first)
 var lane := 0                # lane it is in or moving to (0 = far left)
 var from_lane := 0           # lane it came from (it goes back there if the move gets shut)
 var carry := 0.0             # draft that lingers for a moment after pulling out (momentum)

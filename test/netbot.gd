@@ -41,7 +41,7 @@ func _on_lobby(st: Dictionary) -> void:
 		if st["laps"] != 1:
 			Net.set_settings(1, "random")
 			Net.pick_spot(3)
-		elif st["players"].size() == 2 and not started and not st["racing"]:
+		elif st["players"].size() >= (1 if OS.get_cmdline_user_args().has("--solo") else 2) and not started and not st["racing"]:
 			started = true
 			Net.start_race()
 	elif st["grid"] == "custom" and not started:

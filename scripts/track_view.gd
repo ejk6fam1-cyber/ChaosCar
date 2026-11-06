@@ -1,22 +1,25 @@
 class_name TrackView
 extends Node2D
-## Draws the part of the tri-oval around you: mown grass, the apron with its yellow lines, seven lanes of
-## asphalt, the outside SAFER wall with sponsor boards, the catch fence, packed grandstands along the front
-## stretch and tri-oval, and the start/finish line.
+## Draws the tri-oval: mown grass, the apron with its yellow lines, seven lanes of asphalt, the outside
+## SAFER wall with sponsor boards, the catch fence, packed grandstands along the front stretch and tri-oval,
+## and the start/finish line.
+## The track never changes, so it's drawn ONCE, in 60 m pieces; Godot then only renders the pieces on
+## screen. (Redrawing it every frame was the main cost in the browser.)
 
 var race: Race
 var _crowd: ImageTexture
 var _asphalt: ImageTexture
 const APRON := 10.0      # metres
 const WALL := 1.2
-const BEHIND := 150.0    # metres of track drawn behind you ...
-const AHEAD := 200.0     # ... and ahead
+const CHUNK := 60.0      # metres of track per piece
 const SEG := 2.0         # metres per drawn segment
 
 
 func _ready() -> void:
 	z_index = 0
 	texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+	if _chunk >= 0:
+		return
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 3
 	var img := Image.create(64, 64, false, Image.FORMAT_RGB8)
@@ -42,10 +45,37 @@ func _ready() -> void:
 			var k := rng.randf_range(-0.025, 0.025)
 			a.set_pixel(x, y, Color(0.2 + k, 0.2 + k, 0.22 + k))
 	_asphalt = ImageTexture.create_from_image(a)
+	_build_chunks()
 
 
-func _process(_delta: float) -> void:
-	queue_redraw()
+var _chunk := -1        # which piece this node draws (-1 = the root: builds the pieces)
+
+
+func _build_chunks() -> void:
+	var grass := Node2D.new()
+	grass.draw.connect(_draw_grass.bind(grass))
+	add_child(grass)
+	var n := int(ceil(Race.LAP / CHUNK))
+	for k in n:
+		var piece := TrackView.new()
+		piece.race = race
+		piece._chunk = k
+		piece._crowd = _crowd
+		piece._asphalt = _asphalt
+		piece.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		add_child(piece)
+
+
+func _draw_grass(node: Node2D) -> void:
+	var b := Oval.bounds.grow(700.0)
+	var r := Rect2(b.position * Race.PPM, b.size * Race.PPM)
+	node.draw_rect(r, Color(0.2, 0.42, 0.18))
+	var band := 90.0
+	var y := floorf(r.position.y / band) * band
+	while y < r.end.y:
+		if int(floorf(y / band)) % 2 == 0:
+			node.draw_rect(Rect2(r.position.x, y, r.size.x, band), Color(0.23, 0.47, 0.2))
+		y += band
 
 
 ## Screen point (pixels) of distance s, x metres right of the centre line.
@@ -81,25 +111,14 @@ func _line(s0: float, s1: float, x: float, col: Color, width: float) -> void:
 
 
 func _draw() -> void:
-	if race.player == null:
+	if _chunk < 0:
 		return
 	var ppm := Race.PPM
-	var cam := race.camera.position
-	var ps := race.player.s
-	var s0 := ps - BEHIND
-	var s1 := ps + AHEAD
+	var s0 := _chunk * CHUNK
+	var s1 := minf(s0 + CHUNK, Race.LAP)
 	var hw := Race.half_width()
-	# grass everywhere, with mowing stripes
-	var view := Rect2(cam - Vector2(560, 340), Vector2(1120, 680))
-	draw_rect(view, Color(0.2, 0.42, 0.18))
-	var band := 90.0
-	var y := floorf(view.position.y / band) * band
-	while y < view.end.y:
-		if int(floorf(y / band)) % 2 == 0:
-			draw_rect(Rect2(view.position.x, y, view.size.x, band), Color(0.23, 0.47, 0.2))
-		y += band
 	# grandstands along the front stretch (outside), parking/grass elsewhere
-	var lap0 := floorf(ps / Race.LAP) * Race.LAP
+	var lap0 := 0.0
 	for k: float in [-1.0, 0.0, 1.0]:
 		var line := lap0 + k * Race.LAP
 		var a := maxf(s0, line - Oval.front_behind)
@@ -130,7 +149,7 @@ func _draw() -> void:
 	# sponsor boards on the wall, every 60 m
 	var font := ThemeDB.fallback_font
 	var names := ["DRAFT DAY", "SPEEDWAY", "FULL THROTTLE", "BUMP & RUN", "SUPER 500", "PIT LANE"]
-	var bs := floorf(s0 / 60.0) * 60.0
+	var bs := s0 + CHUNK * 0.5       # boards sit mid-piece, never across a seam between pieces
 	while bs < s1:
 		var idx := absi(int(fposmod(bs, Race.LAP) / 60.0))
 		_band(bs - 4.0, bs + 4.0, hw + 0.1, hw + WALL - 0.1, Color.from_hsv(fmod(idx * 0.17, 1.0), 0.7, 0.75))
@@ -139,7 +158,7 @@ func _draw() -> void:
 		var w := font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, 7).x
 		draw_string(font, Vector2(-w * 0.5, 2.5), t, HORIZONTAL_ALIGNMENT_LEFT, -1, 7, Color.WHITE)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-		bs += 60.0
+		bs += CHUNK
 	# start/finish line (crossed every lap)
 	for k: float in [0.0, 1.0]:
 		var ls := lap0 + k * Race.LAP
