@@ -13,6 +13,7 @@ signal disconnected
 signal lobby_changed(state: Dictionary)
 signal race_started(cfg: Dictionary)
 signal error_message(text: String)
+signal server_answered(server_protocol: int)
 
 const PROTOCOL := 2                  # bump when client and server must update together
 const MAX_PLAYERS := 4
@@ -37,10 +38,10 @@ func _ready() -> void:
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(func() -> void: connected.emit())
 	multiplayer.connection_failed.connect(func() -> void:
-		multiplayer.multiplayer_peer = null
+		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 		connection_failed.emit("Couldn't reach the server."))
 	multiplayer.server_disconnected.connect(func() -> void:
-		multiplayer.multiplayer_peer = null
+		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 		room_state = {}
 		disconnected.emit())
 
@@ -85,6 +86,26 @@ func default_server() -> String:
 
 # =================================================================== server
 
+## Server log line. Goes to stderr, which Render shows straight away (plain prints can sit in a buffer).
+func log_s(msg: String) -> void:
+	printerr("[chaos] " + msg)
+
+
+## Any player: "are you there?" The server answers with its protocol version.
+@rpc("any_peer", "call_remote", "reliable")
+func req_hello(protocol: int) -> void:
+	if not is_server:
+		return
+	var id := multiplayer.get_remote_sender_id()
+	log_s("hello from %d (protocol %d)" % [id, protocol])
+	hello_ok.rpc_id(id, PROTOCOL)
+
+
+@rpc("authority", "call_remote", "reliable")
+func hello_ok(server_protocol: int) -> void:
+	server_answered.emit(server_protocol)
+
+
 func start_server(port: int) -> Error:
 	var peer := WebSocketMultiplayerPeer.new()
 	var err := peer.create_server(port)
@@ -92,18 +113,18 @@ func start_server(port: int) -> Error:
 		return err
 	multiplayer.multiplayer_peer = peer
 	is_server = true
-	print("Chaos Car server listening on port %d" % port)
+	log_s("Chaos Car server listening on port %d (protocol %d)" % [port, PROTOCOL])
 	return OK
 
 
 func _on_peer_connected(id: int) -> void:
 	if is_server:
-		print("player %d connected" % id)
+		log_s("player %d connected" % id)
 
 
 func _on_peer_disconnected(id: int) -> void:
 	if is_server:
-		print("player %d left" % id)
+		log_s("player %d left" % id)
 		_leave_room(id)
 
 
@@ -147,7 +168,7 @@ func _leave_room(id: int) -> void:
 		if room["race"]:
 			(room["race"] as Race).queue_free()
 		_rooms.erase(code)
-		print("room %s closed" % code)
+		log_s("room %s closed" % code)
 		return
 	if room["host"] == id:
 		room["host"] = room["players"][0]
@@ -166,6 +187,7 @@ func req_create(player_name: String, protocol: int) -> void:
 	if not is_server:
 		return
 	var id := multiplayer.get_remote_sender_id()
+	log_s("create request from %d (protocol %d)" % [id, protocol])
 	if protocol != PROTOCOL:
 		error_msg.rpc_id(id, "This game is out of date - refresh the page.")
 		return
@@ -175,7 +197,7 @@ func req_create(player_name: String, protocol: int) -> void:
 		"spots": {id: Race.DEFAULT_SPOT}, "laps": Race.DEFAULT_LAPS, "grid": "random", "race": null}
 	_rooms[code] = room
 	_peer_room[id] = code
-	print("room %s created by %d" % [code, id])
+	log_s("room %s created by %d" % [code, id])
 	_broadcast_lobby(room)
 
 
@@ -184,6 +206,7 @@ func req_join(code: String, player_name: String, protocol: int) -> void:
 	if not is_server:
 		return
 	var id := multiplayer.get_remote_sender_id()
+	log_s("join request from %d for %s (protocol %d)" % [id, code, protocol])
 	if protocol != PROTOCOL:
 		error_msg.rpc_id(id, "This game is out of date - refresh the page.")
 		return
@@ -256,7 +279,7 @@ func req_start() -> void:
 	for id in room["players"]:
 		race_start.rpc_id(id, {"laps": room["laps"], "roster": roster, "local_id": id})
 	_broadcast_lobby(room)
-	print("room %s racing: %d players, %d laps" % [room["code"], humans.size(), room["laps"]])
+	log_s("room %s racing: %d players, %d laps" % [room["code"], humans.size(), room["laps"]])
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
@@ -293,7 +316,7 @@ func _on_race_over(code: String) -> void:
 	room["race"] = null
 	r.queue_free()
 	_broadcast_lobby(room)
-	print("room %s race over" % code)
+	log_s("room %s race over" % code)
 
 
 func _physics_process(_delta: float) -> void:
@@ -329,7 +352,7 @@ static func normalize_url(url: String) -> String:
 
 
 func connection_status() -> int:
-	if multiplayer.multiplayer_peer == null:
+	if not multiplayer.multiplayer_peer is WebSocketMultiplayerPeer:
 		return MultiplayerPeer.CONNECTION_DISCONNECTED
 	return multiplayer.multiplayer_peer.get_connection_status()
 
@@ -346,19 +369,25 @@ func connect_to(url: String) -> Error:
 
 
 func disconnect_from() -> void:
-	if multiplayer.multiplayer_peer and not is_server:
+	if multiplayer.multiplayer_peer is WebSocketMultiplayerPeer and not is_server:
 		multiplayer.multiplayer_peer.close()
-		multiplayer.multiplayer_peer = null
+		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	room_state = {}
 
 
+## Really connected to a server. (A game that hasn't connected has Godot's built-in "offline" peer,
+## which also reports itself as connected - as player 1 - so check it's our WebSocket peer.)
 func is_online() -> bool:
-	return not is_server and multiplayer.multiplayer_peer != null \
+	return not is_server and multiplayer.multiplayer_peer is WebSocketMultiplayerPeer \
 		and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
 
 
 func my_id() -> int:
 	return multiplayer.get_unique_id()
+
+
+func hello() -> void:
+	req_hello.rpc_id(1, PROTOCOL)
 
 
 func create_room(player_name: String) -> void:

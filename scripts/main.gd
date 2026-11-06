@@ -29,6 +29,8 @@ var _pending := ""            # "create" or "join" while connecting
 var _local_cfg := {}
 var _connect_t := -1.0        # seconds spent connecting (-1 = not connecting)
 var _connect_url := ""
+var _wait_t := -1.0           # seconds waiting for the server to answer a request (-1 = not waiting)
+var _wait_what := ""
 
 
 func _ready() -> void:
@@ -48,7 +50,10 @@ func _ready() -> void:
 	Net.disconnected.connect(_on_disconnected)
 	Net.lobby_changed.connect(_on_lobby)
 	Net.race_started.connect(_on_race_started)
-	Net.error_message.connect(func(t: String) -> void: _set_status(t))
+	Net.error_message.connect(func(t: String) -> void:
+		_wait_t = -1.0
+		_set_status(t))
+	Net.server_answered.connect(_on_server_answered)
 	_show("title")
 
 
@@ -322,6 +327,19 @@ func _go_online(what: String) -> void:
 
 
 func _process(delta: float) -> void:
+	if _wait_t >= 0.0:
+		_wait_t += delta
+		if _wait_t > 6.0 and _wait_t - delta <= 6.0:
+			# one retry, in case the first request got lost
+			if _wait_what == "hello":
+				Net.hello()
+			else:
+				_send_pending()
+				_wait_t = 6.01
+			_set_status("Still waiting for the server to answer (%s, asked twice)..." % _wait_what)
+		elif _wait_t > 15.0:
+			_wait_t = -1.0
+			_set_status("Connected to %s, but the server isn't answering '%s' requests. Tell Claude this message." % [_connect_url, _wait_what])
 	if _connect_t < 0.0:
 		return
 	_connect_t += delta
@@ -342,12 +360,30 @@ func _process(delta: float) -> void:
 
 func _on_connected() -> void:
 	_connect_t = -1.0
-	_set_status("Connected - setting up the race...")
+	_set_status("Connected (player %d) - checking the server answers..." % Net.my_id())
+	_wait_what = "hello"
+	_wait_t = 0.0
+	Net.hello()
+
+
+func _on_server_answered(server_protocol: int) -> void:
+	if _wait_what != "hello":
+		return
+	if server_protocol != Net.PROTOCOL:
+		_wait_t = -1.0
+		_set_status("The server is running a different version (%d, this page is %d). Refresh the page, or redeploy the server." % [server_protocol, Net.PROTOCOL])
+		return
+	_set_status("Server answered - setting up the race...")
+	_send_pending()
+
+
+func _send_pending() -> void:
+	_wait_what = _pending
+	_wait_t = 0.0
 	if _pending == "create":
 		Net.create_room(_on_name.text)
 	elif _pending == "join":
 		Net.join_room(_on_code.text, _on_name.text)
-	_pending = ""
 
 
 func _on_disconnected() -> void:
@@ -357,6 +393,8 @@ func _on_disconnected() -> void:
 
 
 func _on_lobby(st: Dictionary) -> void:
+	_wait_t = -1.0
+	_pending = ""
 	if race != null:
 		return              # racing: the lobby screen comes back after
 	if not _screens["lobby"].visible:
