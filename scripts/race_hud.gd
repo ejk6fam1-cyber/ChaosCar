@@ -16,9 +16,6 @@ var _map_pts := PackedVector2Array()
 var _standings: Control
 var _board: Control
 var _again: Button
-var _radio_box: Control
-var _radio_text: Label
-var _radio_t := 0.0
 const RADAR := Rect2(780, 20, 160, 470)
 const RADAR_RANGE := 220.0     # metres ahead/behind shown on the radar
 const INFO := Rect2(12, 12, 270, 114)
@@ -42,36 +39,7 @@ func _ready() -> void:
 	_radar = _canvas(RADAR, _draw_radar)
 	var help := _label(Vector2(12, 512), 15, Color(1, 1, 1, 0.75))
 	help.text = "A / D  or  Left / Right : switch lane (tap)"
-	# the spotter's radio box
-	_radio_box = Control.new()
-	_radio_box.position = Vector2(300, 452)
-	_radio_box.size = Vector2(360, 40)
-	_radio_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_radio_box.modulate.a = 0.0
-	add_child(_radio_box)
-	var rb := Panel.new()
-	var rsb := StyleBoxFlat.new()
-	rsb.bg_color = Color(0.05, 0.07, 0.05, 0.85)
-	rsb.border_color = Color(0.4, 1.0, 0.5, 0.8)
-	rsb.set_border_width_all(2)
-	rsb.set_corner_radius_all(6)
-	rb.add_theme_stylebox_override("panel", rsb)
-	rb.size = _radio_box.size
-	rb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_radio_box.add_child(rb)
-	var tag := Label.new()
-	tag.text = "SPOTTER"
-	tag.position = Vector2(10, 11)
-	tag.add_theme_font_size_override("font_size", 11)
-	tag.add_theme_color_override("font_color", Color(0.4, 1.0, 0.5, 0.8))
-	_radio_box.add_child(tag)
-	_radio_text = Label.new()
-	_radio_text.position = Vector2(76, 5)
-	_radio_text.size = Vector2(276, 30)
-	_radio_text.clip_text = true
-	_radio_text.add_theme_font_size_override("font_size", 19)
-	_radio_text.add_theme_color_override("font_color", Color.WHITE)
-	_radio_box.add_child(_radio_text)
+
 	# finishing order (hidden until you finish)
 	_standings = Control.new()
 	_standings.visible = false
@@ -141,16 +109,7 @@ func _label(pos: Vector2, sz: int, col: Color) -> Label:
 	return l
 
 
-## The spotter says something: show it in the radio box for a couple of seconds.
-func spotter(text: String) -> void:
-	_radio_text.text = text
-	_radio_t = 2.0
-
-
-func _process(delta: float) -> void:
-	_radio_t -= delta
-	if _radio_box:
-		_radio_box.modulate.a = clampf(_radio_t / 0.4, 0.0, 1.0)
+func _process(_delta: float) -> void:
 	if race == null or race.player == null or race.order.is_empty():
 		return
 	var p := race.player

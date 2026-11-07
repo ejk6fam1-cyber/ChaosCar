@@ -7,6 +7,10 @@ config/name="Chaos Car"
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 
+[audio]
+
+driver/driver="Dummy"
+
 [autoload]
 
 Net="*res://scripts/net.gd"
