@@ -59,7 +59,7 @@ const LINE_TOUCH := 0.5          # metres: push only counts from a car actually 
 const TOW_REACH := 0.1           # ... and reaches this much further back per car
 const DRAFT_CAP := 3.0           # (draft_eff limit)
 const DRAFT_LINE := 0.15         # the draft gets this much stronger per car in the line you're drafting (up to 12)
-const BIG_LINE := 7              # a line this long that's running away makes the cars at the back jump out
+const BIG_LINE := 6              # a line this long that's running away makes the cars at the back jump out
 const CARRY_FADE := 1.6          # per second: how fast the draft's tow fades after you pull out
 const BUBBLE_MAX := 0.07         # drag cut from riding inside the pack's bubble of slow air
 const BUBBLE_RANGE := 120.0      # metres ahead the pack's pull reaches (fading with distance)
@@ -76,7 +76,7 @@ const ROOM_PLAYER := 0.4         # metres of clear space you need nose and tail 
 const ROOM_AI_AHEAD := 1.0       # the computer drivers leave a little more
 const ROOM_AI_BEHIND := 2.0
 const TREND_TIME := 2.5          # s: smoothing of each car's gap-to-leader trend
-const GAIN_HEAVY := 1.0          # m/s (2.2 mph): a train closing on the leader faster than this is a keeper
+const GAIN_HEAVY := 1.15         # m/s (2.2 mph): a train closing on the leader faster than this is a keeper
 const LOSE := 0.5                # m/s: losing ground faster than this starts the AI looking for a better line
 const AI_COOLDOWN := 4.0          # seconds an AI car stays put after switching (unless following its line)
 const SHIFT_WAIT := 0.35         # a blocked tap waits this long for the gap to open
@@ -570,14 +570,14 @@ func _ai_choose(c: Car) -> void:
 	var desp := clampf((c.gap_rate - LOSE) / 2.0, 0.0, 1.0) if gap_lead > 20.0 else 0.0    # losing ground: how desperate
 	var late_race := clampf((c.s - (race_length - 3200.0)) / 3200.0, 0.0, 1.0)
 	if c.gaining:
-		keen *= 0.08          # this train is reeling in the leader: stay in it (until the final run)
+		keen *= 0.12          # this train is reeling in the leader: stay in it (until the final run)
 	elif desp > 0.0:
-		keen = minf(keen * (1.0 + 1.5 * desp), 1.0)
+		keen = minf(keen * (1.0 + 1.25 * desp), 1.0)
 		c.think = rng.randf_range(1.1, 2.6)     # losing: look around a bit more often
 	# the car I'm drafting is moving over: go with it and keep the tow (that's how lines move)
 	var f := c.follow
 	c.follow = null
-	if f and f.lane != c.lane and f.s - c.s < 24.0 and rng.randf() < (0.95 if f.crew > 0 else minf((0.35 + c.aggression * 0.3) * (0.7 if train else 1.0) + 0.25 * desp + (0.3 if c.gaining else 0.0), 0.95)):
+	if f and f.lane != c.lane and f.s - c.s < 24.0 and rng.randf() < (0.95 if f.crew > 0 else minf((0.35 + c.aggression * 0.3) * (0.7 if train else 1.0) + 0.2 * desp + (0.25 if c.gaining else 0.0), 0.95)):
 		c.crew = maxi(f.crew - 1, 0)      # part of a group jumping out together: pass the word back
 		if _go(c, f.lane, "crew" if f.crew > 0 else "follow", true):
 			c.think = rng.randf_range(1.2, 2.0)
@@ -589,19 +589,19 @@ func _ai_choose(c: Car) -> void:
 	var lone := c.draft < 0.2 and not train
 	if lone:
 		c.think = rng.randf_range(0.5, 1.2)     # out in the wind: look for a line to join, quickly
-	if c.since_switch < (1.0 if lone else AI_COOLDOWN * (1.0 - 0.35 * desp)):
+	if c.since_switch < (1.0 if lone else AI_COOLDOWN * (1.0 - 0.3 * desp)):
 		return
 	var ahead := _car_ahead(c, 16.0)
 	# stuck at the back of a big line that's running away: from back here we'll never win, so a group
 	# of us jumps out together to start a new line - and the hole we leave cuts the big line's push
 	var line_len := c.line_pos + 1 + c.line_behind
-	if line_len >= BIG_LINE and c.line_pos >= 3 and c.line_behind >= 2 and not c.gaining and _leading_line(c) \
-			and rng.randf() < 0.25 + 0.3 * c.aggression:
+	if line_len >= BIG_LINE and c.line_pos >= 3 and c.line_behind >= 2 and _leading_line(c) \
+			and rng.randf() < 0.35 + 0.35 * c.aggression:
 		var sides := [cur - 1, cur + 1]
 		sides.sort_custom(func(a1: int, b1: int) -> bool: return _lane_count(a1) < _lane_count(b1))
 		for lane in sides:
 			if lane >= 0 and lane < LANES:
-				c.crew = mini(c.line_behind, rng.randi_range(2, 4))
+				c.crew = mini(c.line_behind, rng.randi_range(3, 5))
 				if _go(c, lane, "jump"):
 					return
 				c.crew = 0
@@ -614,7 +614,7 @@ func _ai_choose(c: Car) -> void:
 	# sitting in line: now and then pull out and make a move (more often late in the race);
 	# the car behind usually follows and pushes - that's how runs happen at Talladega
 	var late := clampf((c.s - (race_length - 3200.0)) / 3200.0, 0.0, 1.0)
-	if ahead and ahead.s - c.s - Car.LENGTH < 10.0 and rng.randf() < keen * 0.6 * (0.02 + 0.06 * c.aggression) + 0.3 * late * (0.5 if train else 1.0) * (0.15 if c.gaining else 1.0):
+	if ahead and ahead.s - c.s - Car.LENGTH < 10.0 and rng.randf() < keen * 0.6 * (0.02 + 0.06 * c.aggression) + 0.3 * late * (0.5 if train else 1.0) * (0.2 if c.gaining else 1.0):
 		var options := []
 		for lane in [cur - 1, cur + 1]:
 			if lane >= 0 and lane < LANES and _path_clear(c, lane_x(lane)):
@@ -624,7 +624,7 @@ func _ai_choose(c: Car) -> void:
 			_go(c, lane, "pullout")
 			return
 	# closing on a slower car ahead: pull out and make a run (the slingshot)
-	if ahead and not train and (not c.gaining or late_race > 0.7) and c.v > ahead.v + 1.0 and ahead.s - c.s - Car.LENGTH < 12.0 and rng.randf() < 0.15 + c.aggression * 0.35:
+	if ahead and not train and (not c.gaining or late_race > 0.65) and c.v > ahead.v + 1.0 and ahead.s - c.s - Car.LENGTH < 12.0 and rng.randf() < 0.15 + c.aggression * 0.35:
 		var sides := [cur - 1, cur + 1]
 		if rng.randf() < 0.5:
 			sides.reverse()
@@ -641,7 +641,7 @@ func _ai_choose(c: Car) -> void:
 		var sc := _lane_score(c, lane, desp)
 		if lane != cur:
 			sc -= (0.05 if lone else 0.3) + (0.5 * (1.2 - c.aggression) if c.draft > 0.2 else 0.0) \
-				+ (0.8 * (1.0 - 0.4 * desp) if train else 0.0) + (1.5 if c.gaining else 0.0)   # happy where it is
+				+ (0.8 * (1.0 - 0.4 * desp) if train else 0.0) + (1.2 if c.gaining else 0.0)   # happy where it is
 			if not _path_clear(c, lane_x(lane)):
 				continue
 		if sc > best_score:
@@ -724,7 +724,7 @@ func _lane_score(c: Car, lane: int, desp := 0.0) -> float:
 		sc += minf(line, 5) * 0.12 - maxf(line - 7, 0) * 0.08    # a long line is good; a very long one isn't
 		sc += (line_speed / maxf(line, 1) - c.v) * 0.3
 		# a line that's gaining on the leader (vs how I'm doing) - worth more the more I'm losing
-		sc += clampf(c.gap_rate - line_rate / maxf(line, 1), -2.0, 2.0) * 0.2 * (1.0 + 1.0 * desp)
+		sc += clampf(c.gap_rate - line_rate / maxf(line, 1), -2.0, 2.0) * 0.18 * (1.0 + 0.9 * desp)
 	else:
 		sc -= 1.0       # nobody to draft: hung out in the wind - get back in line!
 	return sc + rng.randf_range(-0.08, 0.08)
@@ -785,7 +785,7 @@ func _leading_line(c: Car) -> bool:
 				front = o
 				moved = true
 				break
-	return order[0].s - front.s < 40.0
+	return order[0].s - front.s < 60.0
 
 
 ## Cars in `lane` near me (out-of-range lanes count as full).
