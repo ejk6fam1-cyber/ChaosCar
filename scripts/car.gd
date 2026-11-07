@@ -48,6 +48,9 @@ var line_pos := 0            # my place in a nose-to-tail line (0 = at the front
 var bubble := 0.0            # 0..1 riding inside the pack
 var wait_for: Car = null     # AI straggler: easing off so this car (behind, same lane) can catch up
 var wait_t := 0.0
+var gap_rate := 0.0          # m/s the gap to the leader is growing (+ losing ground, - gaining), smoothed
+var prev_gap := 0.0
+var gaining := false         # AI: in a train that's reeling in the leader - stay put
 var assist := 0.0            # 0..1 straggler tow (far behind the leader)
 var wake := 0.0              # 0..1 in the wake of cars ahead (long range)
 var turb := 0.0              # dirty-air wander in drag

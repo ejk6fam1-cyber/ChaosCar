@@ -75,6 +75,9 @@ const LATERAL := 40.0            # m/s the car is DRAWN sliding across (a switch
 const ROOM_PLAYER := 0.4         # metres of clear space you need nose and tail to switch into a lane
 const ROOM_AI_AHEAD := 1.0       # the computer drivers leave a little more
 const ROOM_AI_BEHIND := 2.0
+const TREND_TIME := 2.5          # s: smoothing of each car's gap-to-leader trend
+const GAIN_HEAVY := 1.0          # m/s (2.2 mph): a train closing on the leader faster than this is a keeper
+const LOSE := 0.5                # m/s: losing ground faster than this starts the AI looking for a better line
 const AI_COOLDOWN := 4.0          # seconds an AI car stays put after switching (unless following its line)
 const SHIFT_WAIT := 0.35         # a blocked tap waits this long for the gap to open
 const LOOK := 0.35               # s: a lane switch must still fit this long after, at the cars' speeds
@@ -328,6 +331,7 @@ func _step(dt: float) -> void:
 	if flag == Flag.PACE and clock >= PACE_TIME:
 		flag = Flag.GREEN
 	_sort()
+	_trends(dt)
 	_aero()
 	for c in cars:
 		c.carry = maxf(c.draft_eff, c.carry - CARRY_FADE * dt)
@@ -395,6 +399,19 @@ static func aero_mult(c: Car) -> float:
 		* (1.0 + c.turb) \
 		* (1.0 + SIDE_DRAFT * c.side) \
 		* (1.0 + DEEP_DRAG * clampf(c.line_pos - DEEP_FROM, 0, 10))
+
+
+## Each car's gap to the leader, and how fast it's changing (smoothed): + = losing ground, - = gaining.
+func _trends(dt: float) -> void:
+	if order.is_empty():
+		return
+	var lead := order[0].s
+	var k := clampf(dt / TREND_TIME, 0.0, 1.0)
+	for c in order:
+		var gap := lead - c.s
+		var raw := clampf((gap - c.prev_gap) / dt, -15.0, 15.0) if c.prev_gap != 0.0 or gap == 0.0 else 0.0
+		c.gap_rate = lerpf(c.gap_rate, raw, k)
+		c.prev_gap = gap
 
 
 ## HUD meters, 0..1. Draft: the tow you're getting (a long line ahead pulls hardest).
@@ -547,28 +564,38 @@ func _ai_choose(c: Car) -> void:
 	var nose := _car_ahead(c, 3.0)
 	var train := (nose != null or (tail != null and c.s - tail.s - Car.LENGTH < 3.0)) and c.line_pos <= DEEP_FROM + 2
 	var keen := 0.25 if train else 1.0
+	# how my line is doing against the leader
+	var gap_lead := order[0].s - c.s if not order.is_empty() else 0.0
+	c.gaining = gap_lead > 15.0 and -c.gap_rate > GAIN_HEAVY and (train or c.draft > 0.3)
+	var desp := clampf((c.gap_rate - LOSE) / 2.0, 0.0, 1.0) if gap_lead > 20.0 else 0.0    # losing ground: how desperate
+	var late_race := clampf((c.s - (race_length - 3200.0)) / 3200.0, 0.0, 1.0)
+	if c.gaining:
+		keen *= 0.08          # this train is reeling in the leader: stay in it (until the final run)
+	elif desp > 0.0:
+		keen = minf(keen * (1.0 + 1.5 * desp), 1.0)
+		c.think = rng.randf_range(1.1, 2.6)     # losing: look around a bit more often
 	# the car I'm drafting is moving over: go with it and keep the tow (that's how lines move)
 	var f := c.follow
 	c.follow = null
-	if f and f.lane != c.lane and f.s - c.s < 24.0 and rng.randf() < (0.95 if f.crew > 0 else (0.35 + c.aggression * 0.3) * (0.7 if train else 1.0)):
+	if f and f.lane != c.lane and f.s - c.s < 24.0 and rng.randf() < (0.95 if f.crew > 0 else minf((0.35 + c.aggression * 0.3) * (0.7 if train else 1.0) + 0.25 * desp + (0.3 if c.gaining else 0.0), 0.95)):
 		c.crew = maxi(f.crew - 1, 0)      # part of a group jumping out together: pass the word back
 		if _go(c, f.lane, "crew" if f.crew > 0 else "follow", true):
 			c.think = rng.randf_range(1.2, 2.0)
 			return
 	# dropped off the pack: desperate to team up with anyone to draft with
-	if c.assist > 0.0 and c.draft < 0.3 and not c.finished:
+	if c.assist > 0.0 and c.draft < 0.3 and not c.finished and not c.gaining:
 		if _regroup(c):
 			return
 	var lone := c.draft < 0.2 and not train
 	if lone:
 		c.think = rng.randf_range(0.5, 1.2)     # out in the wind: look for a line to join, quickly
-	if c.since_switch < (1.0 if lone else AI_COOLDOWN):
+	if c.since_switch < (1.0 if lone else AI_COOLDOWN * (1.0 - 0.35 * desp)):
 		return
 	var ahead := _car_ahead(c, 16.0)
 	# stuck at the back of a big line that's running away: from back here we'll never win, so a group
 	# of us jumps out together to start a new line - and the hole we leave cuts the big line's push
 	var line_len := c.line_pos + 1 + c.line_behind
-	if line_len >= BIG_LINE and c.line_pos >= 3 and c.line_behind >= 2 and _leading_line(c) \
+	if line_len >= BIG_LINE and c.line_pos >= 3 and c.line_behind >= 2 and not c.gaining and _leading_line(c) \
 			and rng.randf() < 0.25 + 0.3 * c.aggression:
 		var sides := [cur - 1, cur + 1]
 		sides.sort_custom(func(a1: int, b1: int) -> bool: return _lane_count(a1) < _lane_count(b1))
@@ -587,7 +614,7 @@ func _ai_choose(c: Car) -> void:
 	# sitting in line: now and then pull out and make a move (more often late in the race);
 	# the car behind usually follows and pushes - that's how runs happen at Talladega
 	var late := clampf((c.s - (race_length - 3200.0)) / 3200.0, 0.0, 1.0)
-	if ahead and ahead.s - c.s - Car.LENGTH < 10.0 and rng.randf() < keen * 0.6 * (0.02 + 0.06 * c.aggression) + 0.3 * late * (0.5 if train else 1.0):
+	if ahead and ahead.s - c.s - Car.LENGTH < 10.0 and rng.randf() < keen * 0.6 * (0.02 + 0.06 * c.aggression) + 0.3 * late * (0.5 if train else 1.0) * (0.15 if c.gaining else 1.0):
 		var options := []
 		for lane in [cur - 1, cur + 1]:
 			if lane >= 0 and lane < LANES and _path_clear(c, lane_x(lane)):
@@ -597,7 +624,7 @@ func _ai_choose(c: Car) -> void:
 			_go(c, lane, "pullout")
 			return
 	# closing on a slower car ahead: pull out and make a run (the slingshot)
-	if ahead and not train and c.v > ahead.v + 1.0 and ahead.s - c.s - Car.LENGTH < 12.0 and rng.randf() < 0.15 + c.aggression * 0.35:
+	if ahead and not train and (not c.gaining or late_race > 0.7) and c.v > ahead.v + 1.0 and ahead.s - c.s - Car.LENGTH < 12.0 and rng.randf() < 0.15 + c.aggression * 0.35:
 		var sides := [cur - 1, cur + 1]
 		if rng.randf() < 0.5:
 			sides.reverse()
@@ -611,9 +638,10 @@ func _ai_choose(c: Car) -> void:
 	for lane in [cur - 1, cur, cur + 1]:
 		if lane < 0 or lane >= LANES:
 			continue
-		var sc := _lane_score(c, lane)
+		var sc := _lane_score(c, lane, desp)
 		if lane != cur:
-			sc -= (0.05 if lone else 0.3) + (0.5 * (1.2 - c.aggression) if c.draft > 0.2 else 0.0) + (0.8 if train else 0.0)   # happy where it is (a car out in the wind doesn't hesitate)
+			sc -= (0.05 if lone else 0.3) + (0.5 * (1.2 - c.aggression) if c.draft > 0.2 else 0.0) \
+				+ (0.8 * (1.0 - 0.4 * desp) if train else 0.0) + (1.5 if c.gaining else 0.0)   # happy where it is
 			if not _path_clear(c, lane_x(lane)):
 				continue
 		if sc > best_score:
@@ -668,11 +696,12 @@ func _car_ahead(c: Car, within: float) -> Car:
 
 
 ## How good a lane looks: a close car to draft, a long line, a line that's moving faster than us.
-func _lane_score(c: Car, lane: int) -> float:
+func _lane_score(c: Car, lane: int, desp := 0.0) -> float:
 	var lx := lane_x(lane)
 	var nearest := 999.0
 	var line := 0
 	var line_speed := 0.0
+	var line_rate := 0.0
 	var last_s := c.s
 	for o in order:
 		if o == c or o.s <= c.s or absf(o.x - lx) > LANE_W * 0.5:
@@ -688,11 +717,14 @@ func _lane_score(c: Car, lane: int) -> float:
 		if o.s - c.s < (80.0 if c.draft > 0.1 else 260.0):
 			line += 1
 			line_speed += o.v
+			line_rate += o.gap_rate
 	var sc := 0.0
 	if nearest < 999.0:
 		sc += exp(-maxf(nearest, 0.0) / DRAFT_RANGE) * 1.0
 		sc += minf(line, 5) * 0.12 - maxf(line - 7, 0) * 0.08    # a long line is good; a very long one isn't
 		sc += (line_speed / maxf(line, 1) - c.v) * 0.3
+		# a line that's gaining on the leader (vs how I'm doing) - worth more the more I'm losing
+		sc += clampf(c.gap_rate - line_rate / maxf(line, 1), -2.0, 2.0) * 0.2 * (1.0 + 1.0 * desp)
 	else:
 		sc -= 1.0       # nobody to draft: hung out in the wind - get back in line!
 	return sc + rng.randf_range(-0.08, 0.08)
@@ -713,6 +745,9 @@ func _go(c: Car, lane: int, why := "", tight := false) -> bool:
 		tail.follow = c
 		tail.think = minf(tail.think, rng.randf_range(0.05, 0.2) if c.crew > 0 else rng.randf_range(0.1, 0.45))
 	stats[why] = stats.get(why, 0) + 1
+	if c.gaining and why != "follow" and why != "crew":
+		stats["left_gaining_train"] = stats.get("left_gaining_train", 0) + 1
+		stats["left_gaining_by_" + why] = stats.get("left_gaining_by_" + why, 0) + 1
 	c.since_switch = 0.0
 	c.from_lane = c.lane
 	c.lane = lane
